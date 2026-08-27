@@ -1,0 +1,44 @@
+name = "ephemeral-files"
+main = "src/index.js"
+compatibility_date = "2026-08-26"
+
+# Static UI (public/) is served from Cloudflare's edge; the Worker only runs
+# for /api/* and for the /f/<id> share pages.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "none"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "ephemeral-files"
+
+[[kv_namespaces]]
+binding = "META"
+# Cloudflare's deploy button replaces this placeholder with a new namespace ID.
+# For a manual deployment, create a namespace and paste its ID here.
+id = "00000000000000000000000000000000"
+
+# Hourly sweep: deletes expired objects and aborts stale multipart uploads.
+[triggers]
+crons = ["17 * * * *"]
+
+[vars]
+# Hard cap per file, in MiB.
+MAX_SIZE_MB = "5120"
+# Uploads are owner-only and fail closed. Nobody can upload until you run:
+#   npm run token
+#   npx wrangler secret put UPLOAD_TOKEN
+# Anyone with a share link can download its contents.
+
+# Optional per-IP throttles. Uncomment to enable; without them the Worker still
+# works without rate limiting. Pick namespace IDs unique to this application.
+# [[ratelimits]]
+# binding = "UPLOAD_LIMIT"
+# namespace_id = "1001"
+# simple = { limit = 20, period = 60 }
+#
+# [[ratelimits]]
+# binding = "DOWNLOAD_LIMIT"
+# namespace_id = "1002"
+# simple = { limit = 60, period = 60 }

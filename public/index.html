@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>ephemeral</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/style.css">
+<meta name="theme-color" content="#fbfbfa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131313" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ephemeral">
+</head>
+<body>
+<main>
+  <header>
+    <h1>ephemeral</h1>
+    <p class="tagline">Encrypted in your browser. Gone when it expires.</p>
+  </header>
+
+  <!-- owner gate -->
+  <section data-view="gate" hidden>
+    <div class="card">
+      <h2>Locked</h2>
+      <p class="hint">Uploading is limited to whoever holds this instance's upload token. Anyone you send a link to can still open it without one.</p>
+      <div class="linkbox">
+        <input type="password" id="gate-token" autocomplete="current-password" placeholder="upload token" spellcheck="false">
+        <button id="gate-unlock" class="primary">Unlock</button>
+      </div>
+      <label class="checkline">
+        <input type="checkbox" id="gate-remember"> <span>Remember on this device</span>
+      </label>
+    </div>
+    <p id="gate-status" class="status"></p>
+  </section>
+
+  <!-- upload -->
+  <section data-view="upload" hidden>
+    <div class="modes" role="tablist" aria-label="What to share">
+      <button type="button" id="mode-files" class="mode is-on" role="tab" aria-selected="true" aria-controls="files-pane">Files</button>
+      <button type="button" id="mode-text" class="mode" role="tab" aria-selected="false" aria-controls="text-pane">Text</button>
+    </div>
+
+    <div id="files-pane" role="tabpanel" aria-labelledby="mode-files">
+      <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose files">
+        <input type="file" id="file" multiple hidden>
+        <span id="drop-label">Drop one or more files, or click to choose</span>
+        <span id="drop-size" class="hint"></span>
+      </div>
+      <ul id="file-list" class="file-list" hidden></ul>
+    </div>
+
+    <div id="text-pane" role="tabpanel" aria-labelledby="mode-text" hidden>
+      <textarea id="text" rows="9" spellcheck="false" autocomplete="off" autocapitalize="off"
+        autocorrect="off" placeholder="Paste an .env, an API key, a note - anything text."></textarea>
+      <div class="textbar">
+        <label>
+          <span>Name</span>
+          <input id="text-name" placeholder="note.txt" spellcheck="false" autocomplete="off" autocapitalize="off">
+        </label>
+        <span id="text-size" class="hint"></span>
+      </div>
+    </div>
+
+    <div class="options">
+      <label>
+        <span>Expires</span>
+        <select id="ttl">
+          <option value="600">10 minutes</option>
+          <option value="3600">1 hour</option>
+          <option value="86400" selected>1 day</option>
+          <option value="604800">7 days</option>
+          <option value="2592000">30 days</option>
+        </select>
+      </label>
+      <label>
+        <span>Downloads</span>
+        <select id="limit">
+          <option value="1">1 (burn after read)</option>
+          <option value="5">5</option>
+          <option value="25">25</option>
+          <option value="0" selected>unlimited</option>
+        </select>
+      </label>
+      <label class="wide">
+        <span>Password <em>optional second factor, shared separately</em></span>
+        <span class="linkbox">
+          <input type="text" id="password" autocomplete="off" placeholder="none" spellcheck="false">
+          <button id="generate" class="ghost" type="button">generate</button>
+        </span>
+      </label>
+    </div>
+
+    <div class="actions">
+      <button id="send" class="primary" disabled>Encrypt &amp; upload</button>
+      <button id="cancel" class="ghost" hidden>Cancel</button>
+      <span id="limit-note" class="hint"></span>
+    </div>
+
+    <div id="progress" class="progress" hidden>
+      <div class="track"><div id="progress-bar" class="bar"></div></div>
+      <span id="progress-text" class="hint">0%</span>
+    </div>
+    <p id="upload-status" class="status"></p>
+
+    <div id="recent-wrap" hidden>
+      <h2>Your recent links</h2>
+      <ul id="recent" class="recent"></ul>
+      <p class="hint">Stored in this browser so you can delete early. The keys are not kept &mdash; only the links you copied can open these files.</p>
+      <div class="actions"><button id="lock" class="link-button">forget upload token on this device</button></div>
+    </div>
+  </section>
+
+  <!-- result -->
+  <section data-view="result" hidden>
+    <h2>Ready</h2>
+    <label class="field">
+      <span>Link</span>
+      <span class="linkbox">
+        <input id="link" readonly spellcheck="false">
+        <button id="copy" class="ghost">copy</button>
+      </span>
+    </label>
+    <label class="field" id="result-password" hidden>
+      <span>Password &mdash; send this separately</span>
+      <span class="linkbox">
+        <input id="password-out" readonly spellcheck="false">
+        <button id="copy-password" class="ghost">copy</button>
+      </span>
+    </label>
+    <p id="result-note" class="hint"></p>
+    <p class="hint">The part after <code>#</code> is the decryption key. It never reaches the server, so send the link over a channel you trust.</p>
+    <div class="actions"><button id="again" class="ghost">Share another</button></div>
+  </section>
+
+  <!-- download -->
+  <section data-view="file" hidden>
+    <div id="file-card" class="card" hidden>
+      <p id="file-name" class="filename">encrypted file</p>
+      <dl class="facts">
+        <div><dt>Size</dt><dd id="file-size">&mdash;</dd></div>
+        <div><dt>Expires in</dt><dd id="file-expiry">&mdash;</dd></div>
+        <div><dt>Downloads</dt><dd id="file-remaining">&mdash;</dd></div>
+      </dl>
+
+      <div id="unlock-row" class="linkbox" hidden>
+        <input type="password" id="unlock-password" placeholder="password" autocomplete="off">
+        <button id="unlock" class="primary">Unlock</button>
+      </div>
+
+      <div class="actions">
+        <button id="get" class="primary" hidden>Download &amp; decrypt</button>
+      </div>
+      <p id="burn-note" class="hint" hidden></p>
+
+      <div id="note-wrap" hidden>
+        <pre id="note-text" class="note"></pre>
+        <div class="actions">
+          <button id="note-copy" class="primary">Copy</button>
+          <button id="note-save" class="ghost">Save as file</button>
+        </div>
+      </div>
+
+      <div id="bundle-list-wrap" hidden>
+        <ul id="bundle-list" class="recent"></ul>
+        <div class="actions"><button id="bundle-download-all" class="primary">Download all</button></div>
+      </div>
+
+      <div id="file-progress" class="progress" hidden>
+        <div class="track"><div id="file-progress-bar" class="bar"></div></div>
+        <span id="file-progress-text" class="hint">0%</span>
+      </div>
+    </div>
+    <p id="file-status" class="status"></p>
+  </section>
+
+  <footer>
+    <p class="hint">AES-256-GCM in the browser &middot; the server stores ciphertext and cannot read the name or the contents</p>
+  </footer>
+</main>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
