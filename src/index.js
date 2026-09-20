@@ -80,6 +80,50 @@ async function secretEquals(a, b) {
 const maxBytes = (env) => (Number(env.MAX_SIZE_MB) || 5120) * 1024 * 1024;
 const validId = (id) => typeof id === 'string' && /^[A-Za-z0-9]{16,32}$/.test(id);
 
+const BRAND_DEFAULTS = {
+  name: 'ephemeral',
+  tagline: 'Encrypted in your browser. Gone when it expires.',
+  footer: 'AES-256-GCM in the browser \u00b7 the server stores ciphertext and cannot read the name or the contents',
+  logo: '',
+  accent: '#1f6feb',
+  accentDark: '#4c8dff',
+};
+
+function brandText(value, fallback, maxLength, allowEmpty = false) {
+  if (typeof value !== 'string') return fallback;
+  const text = value.trim().slice(0, maxLength);
+  return text || (allowEmpty ? '' : fallback);
+}
+
+function brandColor(value, fallback) {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value.trim())
+    ? value.trim().toLowerCase()
+    : fallback;
+}
+
+function brandAssetPath(value) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const path = value.trim();
+  try {
+    const url = new URL(path, 'https://brand.invalid');
+    if (!path.startsWith('/') || path.startsWith('//') || url.origin !== 'https://brand.invalid' || url.hash) return '';
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return '';
+  }
+}
+
+export function getBrandConfig(env = {}) {
+  return {
+    name: brandText(env.BRAND_NAME, BRAND_DEFAULTS.name, 60),
+    tagline: brandText(env.BRAND_TAGLINE, BRAND_DEFAULTS.tagline, 160, true),
+    footer: brandText(env.BRAND_FOOTER, BRAND_DEFAULTS.footer, 240, true),
+    logo: brandAssetPath(env.BRAND_LOGO),
+    accent: brandColor(env.BRAND_ACCENT, BRAND_DEFAULTS.accent),
+    accentDark: brandColor(env.BRAND_ACCENT_DARK, BRAND_DEFAULTS.accentDark),
+  };
+}
+
 /**
  * Uploading is owner-only and fails closed: with no UPLOAD_TOKEN configured
  * nobody can upload, so a fresh deploy is never an open file dump. Downloads
@@ -309,7 +353,11 @@ async function handleApi(request, env, ctx, url) {
   const method = request.method;
 
   if (method === 'GET' && path === '/config') {
-    return json({ maxSizeMB: Number(env.MAX_SIZE_MB) || 5120, configured: Boolean(env.UPLOAD_TOKEN) });
+    return json({
+      maxSizeMB: Number(env.MAX_SIZE_MB) || 5120,
+      configured: Boolean(env.UPLOAD_TOKEN),
+      brand: getBrandConfig(env),
+    });
   }
   // Lets the UI unlock without starting an upload. Rate-limited like uploads,
   // and it reveals nothing beyond whether the presented token is the right one.

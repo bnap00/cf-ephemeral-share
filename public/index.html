@@ -20,8 +20,13 @@
 <body>
 <main>
   <header>
-    <h1>ephemeral</h1>
-    <p class="tagline">Encrypted in your browser. Gone when it expires.</p>
+    <div class="brand-lockup">
+      <img id="brand-logo" class="brand-logo" alt="" hidden>
+      <div>
+        <h1 id="brand-name">ephemeral</h1>
+        <p id="brand-tagline" class="tagline">Encrypted in your browser. Gone when it expires.</p>
+      </div>
+    </div>
   </header>
 
   <!-- owner gate -->
@@ -181,7 +186,7 @@
   </section>
 
   <footer>
-    <p class="hint">AES-256-GCM in the browser &middot; the server stores ciphertext and cannot read the name or the contents</p>
+    <p id="brand-footer" class="hint">AES-256-GCM in the browser &middot; the server stores ciphertext and cannot read the name or the contents</p>
   </footer>
 </main>
 <script type="module" src="/app.js"></script>

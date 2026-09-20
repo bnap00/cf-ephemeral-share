@@ -11,7 +11,7 @@
     "deploy": "wrangler deploy",
     "sweep": "wrangler dev --test-scheduled",
     "tail": "wrangler tail",
-    "test": "node test/roundtrip.mjs",
+    "test": "node test/roundtrip.mjs && node test/branding.mjs",
     "token": "node -e \"console.log(require('crypto').randomBytes(24).toString('base64url'))\""
   },
   "devDependencies": {

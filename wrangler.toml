@@ -26,6 +26,14 @@ crons = ["17 * * * *"]
 [vars]
 # Hard cap per file, in MiB.
 MAX_SIZE_MB = "5120"
+# Optional instance branding. Text is rendered as plain text, colors must be
+# six-digit hex values, and the logo must be a path inside public/.
+# BRAND_NAME = "Acme Share"
+# BRAND_TAGLINE = "Private transfers for the Acme team."
+# BRAND_FOOTER = "Encrypted in your browser. Stored as ciphertext."
+# BRAND_LOGO = "/acme-logo.svg"
+# BRAND_ACCENT = "#8a3ffc"
+# BRAND_ACCENT_DARK = "#be95ff"
 # Uploads are owner-only and fail closed. Nobody can upload until you run:
 #   npm run token
 #   npx wrangler secret put UPLOAD_TOKEN

@@ -144,12 +144,33 @@ returns ciphertext because the decryption key is in the share link fragment.
 | Expired-object sweep | `crons` in `wrangler.toml` | Hourly |
 | Per-IP rate limits | `[[ratelimits]]` in `wrangler.toml` | Disabled |
 | Upload access | Wrangler secret `UPLOAD_TOKEN` | Uploads disabled |
+| Brand name | `BRAND_NAME` in `wrangler.toml` | `ephemeral` |
+| Tagline | `BRAND_TAGLINE` in `wrangler.toml` | Built-in encryption tagline |
+| Footer | `BRAND_FOOTER` in `wrangler.toml` | Built-in encryption note |
+| Logo | `BRAND_LOGO` in `wrangler.toml` | None |
+| Accent colors | `BRAND_ACCENT`, `BRAND_ACCENT_DARK` in `wrangler.toml` | Blue |
 
 The UI offers expiry periods from 10 minutes to 30 days and download limits
 from one read to unlimited. The Worker enforces both.
 
 The optional rate-limit examples in `wrangler.toml` need namespace IDs unique
 to your Cloudflare account. Uncomment them only after choosing those IDs.
+
+### Branding
+
+Uncomment the `BRAND_*` values in `wrangler.toml` and deploy again. The name,
+tagline, footer, logo, and light/dark accent colors apply to both the upload page
+and shared links. Set `BRAND_TAGLINE` or `BRAND_FOOTER` to an empty string to
+hide it.
+
+`BRAND_LOGO` must point to a file committed under `public/`, for example
+`/acme-logo.svg`. External logo URLs are rejected so the existing content
+security policy stays strict. Accent colors must use six-digit hex notation.
+The interface picks black or white button text based on each accent color.
+
+The browser tab title changes at runtime. To brand the installed PWA too, edit
+`public/manifest.webmanifest`, replace the icon files under `public/icons/`, and
+update `public/favicon.svg`.
 
 ## How encryption works
 

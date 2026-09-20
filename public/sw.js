@@ -4,7 +4,7 @@
  * network, since caching anything keyed by a file id or bearing a link
  * fragment would be a place for ciphertext-adjacent metadata to linger.
  */
-const CACHE = 'ephemeral-shell-v2';
+const CACHE = 'ephemeral-shell-v3';
 const SHELL = [
   '/',
   '/style.css',

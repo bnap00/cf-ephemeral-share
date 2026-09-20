@@ -15,6 +15,7 @@ const DEFAULT_NOTE_NAME = 'note.txt';
 const state = {
   files: [], mode: 'files', limitTouched: false,
   aborter: null, opened: null, meta: null, password: null, note: null,
+  config: null,
 };
 
 /* The upload token is a bearer credential: kept in sessionStorage by default,
@@ -73,6 +74,49 @@ async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `request failed (${response.status})`);
   return data;
+}
+
+function contrastInk(hex) {
+  const channels = hex.slice(1).match(/.{2}/g).map((part) => parseInt(part, 16) / 255);
+  const [r, g, b] = channels.map((channel) => (
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  ));
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return (luminance + 0.05) / 0.05 > 1.05 / (luminance + 0.05) ? '#0d1117' : '#ffffff';
+}
+
+function applyBrand(brand) {
+  if (!brand) return;
+
+  $('#brand-name').textContent = brand.name;
+  document.title = brand.name;
+  $('meta[name="apple-mobile-web-app-title"]').content = brand.name;
+
+  for (const [selector, text] of [['#brand-tagline', brand.tagline], ['#brand-footer', brand.footer]]) {
+    const element = $(selector);
+    element.textContent = text;
+    element.hidden = !text;
+  }
+
+  const logo = $('#brand-logo');
+  if (brand.logo) {
+    logo.src = brand.logo;
+    logo.hidden = false;
+    logo.addEventListener('error', () => { logo.hidden = true; }, { once: true });
+  }
+
+  const root = document.documentElement.style;
+  root.setProperty('--brand-accent-light', brand.accent);
+  root.setProperty('--brand-accent-dark', brand.accentDark);
+  root.setProperty('--brand-accent-ink-light', contrastInk(brand.accent));
+  root.setProperty('--brand-accent-ink-dark', contrastInk(brand.accentDark));
+}
+
+async function loadConfig() {
+  try {
+    state.config = await api('/api/config');
+    applyBrand(state.config.brand);
+  } catch { /* the static defaults keep the offline shell usable */ }
 }
 
 /* --------------------------------------------------------------- upload */
@@ -723,10 +767,9 @@ async function uploadView() {
   $('#copy-password').addEventListener('click', () => copy($('#password-out'), $('#copy-password')));
   $('#again').addEventListener('click', () => location.assign('/'));
 
-  try {
-    const config = await api('/api/config');
-    $('#limit-note').textContent = `up to ${bytes(config.maxSizeMB * 1024 * 1024)} per file`;
-  } catch { /* the limit hint is cosmetic */ }
+  if (state.config) {
+    $('#limit-note').textContent = `up to ${bytes(state.config.maxSizeMB * 1024 * 1024)} per file`;
+  }
 }
 
 async function copyText(text, button, onFail) {
@@ -747,6 +790,7 @@ function registerServiceWorker() {
 
 async function main() {
   registerServiceWorker();
+  await loadConfig();
   const match = location.pathname.match(/^\/f\/([A-Za-z0-9]{16,32})\/?$/);
   if (match) return fileView(match[1]);
 
