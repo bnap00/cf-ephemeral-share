@@ -29,6 +29,9 @@ const SECURITY_HEADERS = {
   'referrer-policy': 'no-referrer',
   'x-frame-options': 'DENY',
   'strict-transport-security': 'max-age=31536000; includeSubDomains',
+  'cross-origin-opener-policy': 'same-origin',
+  'cross-origin-resource-policy': 'same-origin',
+  'permissions-policy': 'accelerometer=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()',
 };
 
 // Mirrors public/_headers so the /f/<id> share pages, which the Worker serves,
@@ -301,27 +304,31 @@ async function download(request, env, ctx, id) {
   const record = await loadRecord(env, id);
   if (!record) return fail('not found or expired', 404);
 
-  const object = await env.BUCKET.get(record.id);
+  // HEAD only asks whether the link is live: it must not spend a read, and
+  // it has no reason to open the object body.
+  const head = request.method === 'HEAD';
+  const object = head ? await env.BUCKET.head(record.id) : await env.BUCKET.get(record.id);
   if (!object) {
     await env.META.delete(`f:${id}`);
     return fail('not found or expired', 404);
   }
 
-  record.downloads += 1;
-  const burned = record.limit > 0 && record.downloads >= record.limit;
-  if (burned) {
-    // Kill the link now; the sweep reclaims the bytes, so we never delete an
-    // object out from under a response that is still streaming.
-    ctx.waitUntil(env.META.delete(`f:${id}`).then(() => env.META.put(`x:${id}`, '1')));
-  } else {
-    ctx.waitUntil(
-      env.META.put(`f:${id}`, JSON.stringify(record), {
-        expirationTtl: Math.max(Math.ceil((record.expires - Date.now()) / 1000), 60),
-      }),
-    );
+  if (!head) {
+    record.downloads += 1;
+    if (record.limit > 0 && record.downloads >= record.limit) {
+      // Kill the link now; the sweep reclaims the bytes, so we never delete an
+      // object out from under a response that is still streaming.
+      ctx.waitUntil(env.META.delete(`f:${id}`).then(() => env.META.put(`x:${id}`, '1')));
+    } else {
+      ctx.waitUntil(
+        env.META.put(`f:${id}`, JSON.stringify(record), {
+          expirationTtl: Math.max(Math.ceil((record.expires - Date.now()) / 1000), 60),
+        }),
+      );
+    }
   }
 
-  return new Response(request.method === 'HEAD' ? null : object.body, {
+  return new Response(head ? null : object.body, {
     headers: {
       ...SECURITY_HEADERS,
       // Always opaque and always an attachment: the origin can never be talked
