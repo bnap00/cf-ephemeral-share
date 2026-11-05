@@ -55,12 +55,17 @@ Cloudflare dashboard after the first deployment if you want one.
 
 ## Manual deployment
 
-Install the development dependencies and authenticate Wrangler:
+Install the development dependencies from the lockfile and authenticate
+Wrangler:
 
 ```sh
-npm install
+npm ci
 npx wrangler login
 ```
+
+The project uses npm. `.npmrc` sets `min-release-age=3`, so npm 11.10 or later
+will not resolve package versions published in the last three days. Older npm
+versions ignore the setting with a warning.
 
 Create the storage resources:
 
@@ -228,6 +233,19 @@ node test/ui.mjs
 ```
 
 Set `CHROMIUM=/path/to/chrome` to use an existing Chromium installation.
+
+### Secret scanning before commits
+
+The repository ships a [pre-commit](https://pre-commit.com/) hook that runs
+[Gitleaks](https://github.com/gitleaks/gitleaks) on staged changes. Install it
+once per clone:
+
+```sh
+pre-commit install
+```
+
+CI runs Gitleaks, OSV-Scanner, CodeQL, and Semgrep on every pull request and
+weekly. See [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## Known limits
 

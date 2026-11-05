@@ -1,0 +1,26 @@
+# Cooldown matches the 3-day install delay in .npmrc. Semgrep's registry rule
+# asks for 7; 3 is the project's chosen trade-off with security-fix latency
+# (Dependabot security updates are not subject to the cooldown).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    cooldown:
+      # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
+      default-days: 3
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    cooldown:
+      # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
+      default-days: 3
