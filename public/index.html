@@ -10,6 +10,8 @@
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/style.css">
+<link rel="modulepreload" href="/crypto.js">
+<link rel="modulepreload" href="/upload.js">
 <meta name="theme-color" content="#fbfbfa" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#131313" media="(prefers-color-scheme: dark)">
 <meta name="mobile-web-app-capable" content="yes">
@@ -35,6 +37,7 @@
       <h2>Locked</h2>
       <p class="hint">Uploading is limited to whoever holds this instance's upload token. Anyone you send a link to can still open it without one.</p>
       <div class="linkbox">
+        <label for="gate-token" class="visually-hidden">Upload token</label>
         <input type="password" id="gate-token" autocomplete="current-password" placeholder="upload token" spellcheck="false">
         <button id="gate-unlock" class="primary">Unlock</button>
       </div>
@@ -42,14 +45,17 @@
         <input type="checkbox" id="gate-remember"> <span>Remember on this device</span>
       </label>
     </div>
-    <p id="gate-status" class="status"></p>
+    <p class="hint">Want an agent to send you secrets? <a href="/keys">Set up a receiving key</a> &mdash; no upload token needed.</p>
+    <p id="gate-status" class="status" role="status" aria-live="polite"></p>
   </section>
 
   <!-- upload -->
   <section data-view="upload" hidden>
+    <!-- made inert while an upload runs, so the selection cannot change under it -->
+    <div id="compose">
     <div class="modes" role="tablist" aria-label="What to share">
       <button type="button" id="mode-files" class="mode is-on" role="tab" aria-selected="true" aria-controls="files-pane">Files</button>
-      <button type="button" id="mode-text" class="mode" role="tab" aria-selected="false" aria-controls="text-pane">Text</button>
+      <button type="button" id="mode-text" class="mode" role="tab" aria-selected="false" aria-controls="text-pane" tabindex="-1">Text</button>
     </div>
 
     <div id="files-pane" role="tabpanel" aria-labelledby="mode-files">
@@ -62,6 +68,7 @@
     </div>
 
     <div id="text-pane" role="tabpanel" aria-labelledby="mode-text" hidden>
+      <label for="text" class="visually-hidden">Text to share</label>
       <textarea id="text" rows="9" spellcheck="false" autocomplete="off" autocapitalize="off"
         autocorrect="off" placeholder="Paste an .env, an API key, a note - anything text."></textarea>
       <div class="textbar">
@@ -101,6 +108,7 @@
         </span>
       </label>
     </div>
+    </div>
 
     <div class="actions">
       <button id="send" class="primary" disabled>Encrypt &amp; upload</button>
@@ -109,16 +117,26 @@
     </div>
 
     <div id="progress" class="progress" hidden>
-      <div class="track"><div id="progress-bar" class="bar"></div></div>
+      <div class="track" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-bar" class="bar"></div></div>
       <span id="progress-text" class="hint">0%</span>
     </div>
-    <p id="upload-status" class="status"></p>
+    <p id="upload-status" class="status" role="status" aria-live="polite"></p>
 
     <div id="recent-wrap" hidden>
       <h2>Your recent links</h2>
       <ul id="recent" class="recent"></ul>
-      <p class="hint">Stored in this browser so you can delete early. The keys are not kept &mdash; only the links you copied can open these files.</p>
-      <div class="actions"><button id="lock" class="link-button">forget upload token on this device</button></div>
+      <p class="hint">Names and delete tokens are stored in this browser so you can delete early. The keys are not kept &mdash; only the links you copied can open these files.</p>
+    </div>
+
+    <div class="actions lock-row">
+      <a href="/keys" class="hint">receiving keys</a>
+      <button id="lock" type="button" class="link-button">forget upload token on this device</button>
+      <span id="lock-choice" class="lock-choice" hidden>
+        <span class="hint">Forget</span>
+        <button id="lock-token" type="button" class="ghost">token only</button>
+        <button id="lock-all" type="button" class="ghost">token and recent links</button>
+        <button id="lock-keep" type="button" class="link-button">keep everything</button>
+      </span>
     </div>
   </section>
 
@@ -144,10 +162,26 @@
     <div class="actions"><button id="again" class="ghost">Share another</button></div>
   </section>
 
+  <!-- receiving keys: for links sealed by an agent to this browser -->
+  <section data-view="keys" hidden>
+    <h2>Receive from agents</h2>
+    <p class="hint">A receiving key lets an AI agent or a script send you a secret or a file that only this browser can open. The agent gets the public half. The private half is created here, cannot be exported, and never leaves this browser &mdash; so the link the agent hands you is useless to the agent, its logs, or anyone who reads the transcript.</p>
+    <div class="linkbox">
+      <label for="key-label" class="visually-hidden">Label</label>
+      <input id="key-label" placeholder="label, e.g. work laptop" spellcheck="false" autocomplete="off" maxlength="60">
+      <button id="key-create" class="primary" type="button">Create receiving key</button>
+    </div>
+    <p id="keys-status" class="status" role="status" aria-live="polite"></p>
+    <p id="key-empty" class="hint">No receiving keys in this browser yet.</p>
+    <ul id="key-list" class="recent keys"></ul>
+    <p class="hint">Open sealed links in this same browser profile. Clearing this site's data deletes its keys, and links sealed only to a deleted key can never be opened. Create one key per device you want to receive on.</p>
+  </section>
+
   <!-- download -->
   <section data-view="file" hidden>
     <div id="file-card" class="card" hidden>
       <p id="file-name" class="filename">encrypted file</p>
+      <p id="sealed-note" class="hint" hidden></p>
       <dl class="facts">
         <div><dt>Size</dt><dd id="file-size">&mdash;</dd></div>
         <div><dt>Expires in</dt><dd id="file-expiry">&mdash;</dd></div>
@@ -155,6 +189,7 @@
       </dl>
 
       <div id="unlock-row" class="linkbox" hidden>
+        <label for="unlock-password" class="visually-hidden">Password</label>
         <input type="password" id="unlock-password" placeholder="password" autocomplete="off">
         <button id="unlock" class="primary">Unlock</button>
       </div>
@@ -178,11 +213,12 @@
       </div>
 
       <div id="file-progress" class="progress" hidden>
-        <div class="track"><div id="file-progress-bar" class="bar"></div></div>
+        <div class="track" role="progressbar" aria-label="Download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="file-progress-bar" class="bar"></div></div>
         <span id="file-progress-text" class="hint">0%</span>
       </div>
     </div>
-    <p id="file-status" class="status"></p>
+    <p id="file-status" class="status" role="status" aria-live="polite"></p>
+    <p id="sealed-help" class="hint" hidden>Receiving keys live in the browser that created them. <a href="/keys">See the keys in this browser</a>.</p>
   </section>
 
   <footer>

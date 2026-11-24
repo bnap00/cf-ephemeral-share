@@ -1,0 +1,8 @@
+# Test fixtures, not secrets: fixed crypto test vectors (link keys of
+# throwaway shares), fake TICKET_SECRET values, and a dummy env value used to
+# check that `ef send --from-env` never echoes its input.
+b2a2fe15f634b7e696ff21c978db897ecbf09ab4:test/roundtrip.mjs:generic-api-key:112
+b2a2fe15f634b7e696ff21c978db897ecbf09ab4:test/roundtrip.mjs:generic-api-key:120
+b2a2fe15f634b7e696ff21c978db897ecbf09ab4:test/worker.mjs:generic-api-key:835
+b2a2fe15f634b7e696ff21c978db897ecbf09ab4:test/worker.mjs:generic-api-key:839
+d2acc7e25b99bbaf5e1b4cfa3db1d5840b0d1361:test/cli.mjs:generic-api-key:614

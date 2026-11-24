@@ -23,6 +23,17 @@ id = "00000000000000000000000000000000"
 [triggers]
 crons = ["17 * * * *"]
 
+# Keep Worker logs (errors, sweep results) so failures are visible without a
+# live `wrangler tail`. The Worker keeps share ids, tokens and keys out of its
+# own log lines. Invocation logs stay off: they record every request's full
+# URL, and share ids are in the URL.
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = false
+
 [vars]
 # Hard cap per file, in MiB.
 MAX_SIZE_MB = "5120"
@@ -38,13 +49,46 @@ MAX_SIZE_MB = "5120"
 #   npm run token
 #   npx wrangler secret put UPLOAD_TOKEN
 # Anyone with a share link can download its contents.
+#
+# Resume tickets for interrupted downloads are signed with a random secret the
+# Worker creates on first use and keeps in KV (k:ticket-secret), bound to
+# UPLOAD_TOKEN. To pin it instead, `npx wrangler secret put TICKET_SECRET` with
+# a long random value. Rotating either one only makes a download in progress
+# start over.
+#
+# Shares uploaded by current clients are bound to their link key: a download
+# that presents the wrong key is refused without spending a view. Downloads
+# that present no key at all (older CLI copies, app pages cached before the
+# change) are still allowed. Some days after deploying, once cached clients
+# have refreshed, uncomment this to refuse them too. Shares uploaded before
+# the change are never challenged either way.
+# DOWNLOAD_AUTH = "enforce"
+
+# Optional strongly consistent download counter. Without it, limits are counted
+# in KV, which is eventually consistent: two downloads racing on a one-read link
+# from different locations can both be served. With it, each limited share gets
+# a Durable Object that claims downloads one at a time; links created before it
+# was enabled keep their remaining count, and downloads counted in KV while it
+# was removed still count when it comes back. Unlimited shares never use it. To turn
+# it on, uncomment both blocks and deploy. Keep the migration block even if you
+# later remove the binding; deleting the class needs a deleted_classes migration.
+# [[durable_objects.bindings]]
+# name = "COUNTER"
+# class_name = "DownloadCounter"
+#
+# [[migrations]]
+# tag = "v1"
+# new_sqlite_classes = ["DownloadCounter"]
 
 # Optional per-IP throttles. Uncomment to enable; without them the Worker still
 # works without rate limiting. Pick namespace IDs unique to this application.
+# UPLOAD_LIMIT counts upload inits and token checks: a bundle of N files costs
+# N+1 inits (one per file plus the index), so leave room for your largest bundle.
+# DOWNLOAD_LIMIT also throttles share metadata lookups, on a separate counter.
 # [[ratelimits]]
 # binding = "UPLOAD_LIMIT"
 # namespace_id = "1001"
-# simple = { limit = 20, period = 60 }
+# simple = { limit = 120, period = 60 }
 #
 # [[ratelimits]]
 # binding = "DOWNLOAD_LIMIT"

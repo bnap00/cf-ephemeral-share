@@ -6,16 +6,24 @@
   "description": "Ephemeral file sharing on Cloudflare Workers + R2 + KV",
   "license": "MIT",
   "repository": "github:bnap00/cf-ephemeral-share",
+  "bin": {
+    "ef": "tools/ef.mjs"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:prod": "wrangler deploy -c wrangler.deploy.toml",
     "sweep": "wrangler dev --test-scheduled",
     "tail": "wrangler tail",
-    "test": "node test/roundtrip.mjs && node test/branding.mjs",
+    "test": "node test/roundtrip.mjs && node test/branding.mjs && node test/worker.mjs && node test/cli.mjs",
+    "test:ui": "node test/ui.mjs",
     "token": "node -e \"console.log(require('crypto').randomBytes(24).toString('base64url'))\""
   },
   "devDependencies": {
     "playwright": "^1.62.1",
     "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
