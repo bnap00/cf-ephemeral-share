@@ -20,8 +20,8 @@
     "token": "node -e \"console.log(require('crypto').randomBytes(24).toString('base64url'))\""
   },
   "devDependencies": {
-    "playwright": "^1.62.1",
-    "wrangler": "^4.0.0"
+    "playwright": "^1.65.1",
+    "wrangler": "^4.166.0"
   },
   "engines": {
     "node": ">=22"
