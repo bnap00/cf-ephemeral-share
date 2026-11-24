@@ -161,7 +161,7 @@ async function password({ given, fromStdin }, { stdinTaken = false } = {}) {
 }
 
 /** Sender-chosen names reach the terminal: no control or bidi characters. */
-const printable = (s) => String(s).replace(/[\x00-\x1f\x7f-\x9f؜‎‏‪-‮⁦-⁩]/g, '?');
+const printable = (s) => String(s).replace(/[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '?');
 
 /** A sender-chosen name as a file in the chosen directory, never a path. */
 function safeName(name) {
