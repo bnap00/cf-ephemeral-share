@@ -45,6 +45,7 @@
         <input type="checkbox" id="gate-remember"> <span>Remember on this device</span>
       </label>
     </div>
+    <p class="hint">Want an agent to send you secrets? <a href="/keys">Set up a receiving key</a> &mdash; no upload token needed.</p>
     <p id="gate-status" class="status" role="status" aria-live="polite"></p>
   </section>
 
@@ -128,6 +129,7 @@
     </div>
 
     <div class="actions lock-row">
+      <a href="/keys" class="hint">receiving keys</a>
       <button id="lock" type="button" class="link-button">forget upload token on this device</button>
       <span id="lock-choice" class="lock-choice" hidden>
         <span class="hint">Forget</span>
@@ -160,10 +162,26 @@
     <div class="actions"><button id="again" class="ghost">Share another</button></div>
   </section>
 
+  <!-- receiving keys: for links sealed by an agent to this browser -->
+  <section data-view="keys" hidden>
+    <h2>Receive from agents</h2>
+    <p class="hint">A receiving key lets an AI agent or a script send you a secret or a file that only this browser can open. The agent gets the public half. The private half is created here, cannot be exported, and never leaves this browser &mdash; so the link the agent hands you is useless to the agent, its logs, or anyone who reads the transcript.</p>
+    <div class="linkbox">
+      <label for="key-label" class="visually-hidden">Label</label>
+      <input id="key-label" placeholder="label, e.g. work laptop" spellcheck="false" autocomplete="off" maxlength="60">
+      <button id="key-create" class="primary" type="button">Create receiving key</button>
+    </div>
+    <p id="keys-status" class="status" role="status" aria-live="polite"></p>
+    <p id="key-empty" class="hint">No receiving keys in this browser yet.</p>
+    <ul id="key-list" class="recent keys"></ul>
+    <p class="hint">Open sealed links in this same browser profile. Clearing this site's data deletes its keys, and links sealed only to a deleted key can never be opened. Create one key per device you want to receive on.</p>
+  </section>
+
   <!-- download -->
   <section data-view="file" hidden>
     <div id="file-card" class="card" hidden>
       <p id="file-name" class="filename">encrypted file</p>
+      <p id="sealed-note" class="hint" hidden></p>
       <dl class="facts">
         <div><dt>Size</dt><dd id="file-size">&mdash;</dd></div>
         <div><dt>Expires in</dt><dd id="file-expiry">&mdash;</dd></div>
@@ -200,6 +218,7 @@
       </div>
     </div>
     <p id="file-status" class="status" role="status" aria-live="polite"></p>
+    <p id="sealed-help" class="hint" hidden>Receiving keys live in the browser that created them. <a href="/keys">See the keys in this browser</a>.</p>
   </section>
 
   <footer>

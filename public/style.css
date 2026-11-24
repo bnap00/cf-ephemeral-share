@@ -226,6 +226,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .status { min-height: 1.2rem; margin: .8rem 0 0; font-size: .85rem; color: var(--muted); }
 .status.ok { color: var(--ok); }
 .status.error { color: var(--error); }
+.hint a { color: var(--accent); }
 
 /* result */
 .linkbox { display: flex; gap: .5rem; }
@@ -250,6 +251,13 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .recent li:last-child { border-bottom: none; }
 .recent-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recent-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* receiving keys */
+.recent.keys { margin-top: 1rem; }
+.recent li.key-row { display: block; padding: .9rem 0; }
+.key-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: .6rem; }
+.key-row .field { margin-top: .5rem; }
+.key-row .field input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; }
 
 /* download card */
 .card { padding: 1.25rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }

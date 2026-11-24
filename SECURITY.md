@@ -40,6 +40,9 @@ In scope:
 - Script injection or content-type confusion on the deployment's origin
 - Leaks of the URL fragment through logs, referrers, caches, or the service
   worker
+- Recovering the link key, or the plaintext, from a link sealed to a
+  receiving key (`#r1.…`) without that key's private half, or getting a
+  browser to export a receiving key's private half
 
 Out of scope:
 
@@ -56,6 +59,12 @@ Out of scope:
 - Decrypted copies left in browser storage on the OPFS download path, by a
   tab that was closed or crashed, until the next visit removes them as the
   README documents
+- An agent or script that holds the upload token reading what it sends.
+  Sealing protects the link, not the sender: whoever produces the content
+  already has it. The `ephemeral-send` skill keeps it out of an agent's transcript
+  by convention, not by enforcement.
+- Anything that can read a terminal receiving key (`ef keygen`, stored in
+  the CLI's config directory) opening links sealed to it
 - Missing rate limits on deployments that have not enabled the optional
   `[[ratelimits]]` bindings
 - Denial of service against your own Cloudflare account quotas

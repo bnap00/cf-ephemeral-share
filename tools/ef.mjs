@@ -11,9 +11,22 @@
  *   node tools/ef.mjs get 'https://…#key' -o ./dir  # a multi-file share fills a directory
  *   node tools/ef.mjs rm 'https://…/f/abc...' --token <deleteToken>   # or a bare id + --host
  *
- * Environment: EF_HOST, EF_TOKEN (upload token), EF_PASSWORD, and
- * EF_REQUIRE_HTTPS=1 (same as --require-https: refuse to send a token over
- * plain http to anything but this machine).
+ * Agent-to-human (see the README, "Sending from agents"):
+ *   ef send ./report.pdf --to alice              # sealed to alice's receiving key, 1 read
+ *   some-command | ef send - --name db.env       # stdin, never echoed
+ *   ef send --from-env DB_PASSWORD --name db-password --json
+ *   ef send --generate 32 --name new-api-secret  # a fresh secret only the recipient ever sees
+ *   ef recipient add alice efpk1.…   ef recipient list   ef recipient rm alice
+ *   ef keygen --label laptop                     # a receiving key for this terminal
+ *   ef config set host https://files.example.com
+ *   ef config set token - < token.txt            # never on the command line
+ *   ef config show
+ *
+ * Environment: EF_HOST, EF_TOKEN (upload token), EF_PASSWORD, EF_CONFIG (the
+ * config file, default $XDG_CONFIG_HOME/ef/config.json or ~/.config/ef/config.json),
+ * and EF_REQUIRE_HTTPS=1 (same as --require-https: refuse to send a token over
+ * plain http to anything but this machine). Flags beat the environment, which
+ * beats the config file.
  *
  * The key is only ever in the fragment, so it never reaches the server - not
  * in the URL it sees, not in its logs. Uploads register a verifier derived
@@ -23,13 +36,16 @@
  * without spending a second view.
  */
 import { basename, dirname, join } from 'node:path';
-import { openAsBlob, unlinkSync } from 'node:fs';
-import { open, lstat, stat, rename, unlink, chmod, mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { openAsBlob, unlinkSync, readFileSync as readFileSyncImpl } from 'node:fs';
+import { open, lstat, stat, rename, unlink, chmod, mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import { Writable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   CHUNK, NOTE_TYPE, BUNDLE_TYPE, openHeader, decryptStream, deriveAuth, resumeOffset,
+  isSealed, sealedKids, sealLinkKey, openSealedLinkKey, parseRecipient, generateRecipient,
+  b64urlEncode,
 } from '../public/crypto.js';
 import { uploadFile, request, withRetry, ApiError } from '../public/upload.js';
 
@@ -154,7 +170,7 @@ function safeName(name) {
 }
 
 function hostFrom(value) {
-  const raw = (value || process.env.EF_HOST || 'http://localhost:8787').replace(/\/+$/, '');
+  const raw = (value || process.env.EF_HOST || config().host || 'http://localhost:8787').replace(/\/+$/, '');
   let url;
   try {
     url = new URL(raw);
@@ -166,7 +182,7 @@ function hostFrom(value) {
 }
 
 const loopback = (hostname) =>
-  hostname === 'localhost' || hostname.endsWith('.localhost') || /^127\./.test(hostname)
+  hostname === 'localhost' || hostname.endsWith('.localhost') || /^127(\.\d{1,3}){3}$/.test(hostname)
   || hostname === '[::1]' || hostname === '::1';
 
 /** A token sent over plain http to another machine can be read on the way.
@@ -204,8 +220,9 @@ async function put() {
   const ttl = ttlFlag();
   const limit = limitFlag();
   const passFlags = passwordFlags();
-  const token = flag('--token') || process.env.EF_TOKEN || '';
-  if (!token) throw new Error('an upload token is required: pass --token or set EF_TOKEN');
+  const token = flag('--token') || process.env.EF_TOKEN || config().token || '';
+  if (!token) throw new Error('an upload token is required: pass --token, set EF_TOKEN, or run `ef config set token -`');
+  const to = await recipientsFrom(flags('--to'), { fallback: false });
   const text = flag('--text');
   const name = flag('--name');
   const strict = strictHttps();
@@ -213,7 +230,7 @@ async function put() {
   if (text === undefined && !path) {
     throw new UsageError(
       'usage: ef put <file|-> [--text s] [--name n] [--host url] [--ttl s] [--limit n]\n' +
-      '              [--password p | --password-stdin] [--require-https]',
+      '              [--password p | --password-stdin] [--to recipient]... [--require-https]',
     );
   }
   checkTransport(host, 'upload token', strict);
@@ -250,11 +267,315 @@ async function put() {
   });
   process.stderr.write('\n');
 
-  console.error(`password: ${pass ? 'yes' : 'no'} · downloads: ${limit || 'unlimited'}`);
+  console.error(`password: ${pass ? 'yes' : 'no'} · downloads: ${limit || 'unlimited'}${to.length ? ` · sealed to ${to.map((r) => r.name).join(', ')}` : ''}`);
   console.error(`expires ${new Date(done.expires).toISOString()} · delete token ${done.deleteToken}`);
   // Built from the host actually used rather than the Worker's idea of it,
   // which follows whatever Host header reached it.
-  console.log(`${host}/f/${done.id}#${done.linkKey}`);
+  const fragment = to.length ? await sealLinkKey(done.linkKey, to) : done.linkKey;
+  console.log(`${host}/f/${done.id}#${fragment}`);
+}
+
+/* ------------------------------------------------------- config and keys */
+
+/** Every value of a repeatable flag, e.g. --to a --to b. */
+function flags(name) {
+  const out = [];
+  for (let v; (v = flag(name)) !== undefined;) out.push(v);
+  return out;
+}
+
+const configDir = () => (process.env.EF_CONFIG
+  ? dirname(process.env.EF_CONFIG)
+  : join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'ef'));
+const configPath = () => process.env.EF_CONFIG || join(configDir(), 'config.json');
+const keysDir = () => join(configDir(), 'keys');
+
+let loadedConfig = null;
+/** The config file, read once: { host, token, recipients: { name: 'efpk1…' }, default }.
+    A missing file is an empty config; a broken one is an error, never ignored. */
+function config() {
+  if (loadedConfig) return loadedConfig;
+  loadedConfig = {};
+  let text;
+  try {
+    text = readFileSyncQuiet(configPath());
+  } catch (err) {
+    throw new Error(`cannot read ${configPath()}: ${err.message}`);
+  }
+  if (text === null) return loadedConfig;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) loadedConfig = parsed;
+    else throw new Error('not an object');
+  } catch (err) {
+    throw new Error(`${configPath()} is not valid JSON (${err.message})`);
+  }
+  return loadedConfig;
+}
+
+function readFileSyncQuiet(path) {
+  try {
+    return readFileSyncImpl(path, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** Written owner-only, via a temp file, so a crash never leaves half a config. */
+async function saveConfig(next) {
+  await mkdir(configDir(), { recursive: true, mode: 0o700 });
+  const temp = `${configPath()}.${nodeRandomBytes(4).toString('hex')}.tmp`;
+  await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  await rename(temp, configPath());
+  loadedConfig = next;
+}
+
+/** The token is a bearer credential: say so if the file holding it is readable by others. */
+async function warnIfOpen() {
+  if (process.platform === 'win32' || !config().token) return;
+  const st = await stat(configPath()).catch(() => null);
+  if (st && (st.mode & 0o077)) console.error(`warning: ${configPath()} holds the upload token and is readable by other users; run chmod 600 on it`);
+}
+
+const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
+ * --to values (names from the config, or efpk1.… keys) -> [{ name, kid, raw, key }].
+ * With none given and `fallback`, the config's `default` (a name or a list),
+ * else its only recipient. Parsed before anything is uploaded.
+ */
+async function recipientsFrom(given, { fallback }) {
+  const known = config().recipients && typeof config().recipients === 'object' ? config().recipients : {};
+  let wanted = given;
+  if (!wanted.length && fallback) {
+    const def = config().default;
+    if (def) wanted = [].concat(def);
+    else if (Object.keys(known).length === 1) wanted = Object.keys(known);
+  }
+  if (wanted.length > 8) throw new UsageError('at most 8 recipients');
+  const out = [];
+  for (const value of wanted) {
+    const text = value.startsWith('efpk1.') ? value : known[value];
+    if (!text) {
+      const names = Object.keys(known);
+      throw new UsageError(`unknown recipient '${printable(value)}'${names.length ? ` (known: ${names.join(', ')})` : '; add one with `ef recipient add <name> efpk1.…`'}`);
+    }
+    try {
+      const r = await parseRecipient(text);
+      out.push({ ...r, name: value.startsWith('efpk1.') ? r.kid : value });
+    } catch (err) {
+      throw new UsageError(`recipient '${printable(value.startsWith('efpk1.') ? value.slice(0, 16) + '…' : value)}': ${err.message}`);
+    }
+  }
+  return out;
+}
+
+async function recipientCmd() {
+  const sub = args.shift();
+  const cfg = { ...config() };
+  const recipients = { ...(cfg.recipients || {}) };
+  if (sub === 'add') {
+    const asDefault = has('--default');
+    const [name, key] = [args.shift(), args.shift()];
+    if (!name || !key) throw new UsageError('usage: ef recipient add <name> <efpk1.…> [--default]');
+    if (!NAME.test(name) || name.startsWith('efpk1.')) throw new UsageError('a recipient name is letters, digits, . _ - (up to 64), not starting with efpk1.');
+    const r = await parseRecipient(key).catch((err) => { throw new UsageError(err.message); });
+    if (recipients[name] && recipients[name] !== r.text) {
+      throw new UsageError(`recipient '${name}' already exists with a different key; pick another name, or \`ef recipient rm ${name}\` first`);
+    }
+    recipients[name] = r.text;
+    const makeDefault = asDefault || (!cfg.default && Object.keys(recipients).length === 1);
+    await saveConfig({ ...cfg, recipients, ...(makeDefault ? { default: name } : {}) });
+    console.error(`added ${name} (id ${r.kid})${makeDefault ? ', the default recipient' : ''}`);
+  } else if (sub === 'rm') {
+    const name = args.shift();
+    if (!name || !recipients[name]) throw new UsageError(`usage: ef recipient rm <name>; known: ${Object.keys(recipients).join(', ') || 'none'}`);
+    delete recipients[name];
+    const next = { ...cfg, recipients };
+    if (next.default === name) delete next.default;
+    await saveConfig(next);
+    console.error(`removed ${name}`);
+  } else if (sub === 'list' || sub === undefined) {
+    const names = Object.keys(recipients);
+    if (!names.length) console.error('no recipients; add one with `ef recipient add <name> efpk1.…`');
+    for (const name of names) {
+      const r = await parseRecipient(recipients[name]).catch(() => null);
+      console.log(`${name}${cfg.default === name ? ' (default)' : ''}\t${r ? `id ${r.kid}` : 'INVALID KEY'}`);
+    }
+  } else {
+    throw new UsageError('usage: ef recipient <add|rm|list> ...');
+  }
+}
+
+async function configCmd() {
+  const sub = args.shift();
+  const cfg = { ...config() };
+  if (sub === 'show' || sub === undefined) {
+    const shown = { ...cfg, ...(cfg.token ? { token: `<set, ${cfg.token.length} chars>` } : {}) };
+    console.log(JSON.stringify({ file: configPath(), ...shown }, null, 2));
+    await warnIfOpen();
+    return;
+  }
+  if (sub !== 'set') throw new UsageError('usage: ef config <show | set host <url> | set token - | set default <name>>');
+  const [key, value] = [args.shift(), args.shift()];
+  if (key === 'host') {
+    if (!value) throw new UsageError('usage: ef config set host https://files.example.com');
+    const host = hostFrom(value);
+    await saveConfig({ ...cfg, host });
+    console.error(`host set to ${host}`);
+  } else if (key === 'token') {
+    // Never from argv: it would sit in shell history, the process list and
+    // any agent transcript that shows the command.
+    if (value !== '-') throw new UsageError('pass the token on stdin: ef config set token - < token.txt');
+    const token = (await readStdin()).toString('utf8').trim();
+    if (!token) throw new UsageError('read an empty token from stdin');
+    await saveConfig({ ...cfg, token });
+    console.error('token saved');
+  } else if (key === 'default') {
+    if (!value || !cfg.recipients?.[value]) throw new UsageError('usage: ef config set default <recipient name>');
+    await saveConfig({ ...cfg, default: value });
+    console.error(`default recipient is ${value}`);
+  } else {
+    throw new UsageError('usage: ef config set <host|token|default> ...');
+  }
+}
+
+/** A receiving key for this terminal, so `ef get` can open links sealed to it.
+    The private half is a JWK in keys/<kid>.json, owner-only. Anything that can
+    read that file (an agent on this machine included) can open those links. */
+async function keygen() {
+  const label = flag('--label') || 'terminal';
+  const r = await generateRecipient({ extractable: true });
+  const jwk = await crypto.subtle.exportKey('jwk', r.privateKey);
+  await mkdir(keysDir(), { recursive: true, mode: 0o700 });
+  await writeFile(join(keysDir(), `${r.kid}.json`), `${JSON.stringify({ label, created: Date.now(), public: r.text, jwk })}\n`, { mode: 0o600, flag: 'wx' });
+  console.error(`receiving key '${printable(label)}' (id ${r.kid}) saved in ${keysDir()}`);
+  console.error('give the public key below to the sender: ef recipient add <name> <key>');
+  console.log(r.text);
+}
+
+/** The link key of a sealed fragment, from a key in this terminal's keystore. */
+async function unsealWithLocalKeys(fragment) {
+  const kids = sealedKids(fragment);
+  for (const kid of kids) {
+    let stored;
+    try {
+      stored = JSON.parse(await readFile(join(keysDir(), `${kid}.json`), 'utf8'));
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      throw new Error(`cannot read receiving key ${kid}: ${err.message}`);
+    }
+    const privateKey = await crypto.subtle.importKey('jwk', stored.jwk, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
+    const { raw } = await parseRecipient(stored.public);
+    return openSealedLinkKey(fragment, { privateKey, raw });
+  }
+  const local = (await readdir(keysDir()).catch(() => [])).filter((n) => n.endsWith('.json')).length;
+  throw new Error(`this link is sealed to a receiving key that is not on this machine (sealed to ${kids.join(', ')}; ${local} key(s) in ${keysDir()}). Open it in the browser that holds the key.`);
+}
+
+/**
+ * Agent-safe sending. Same encryption and wire format as `put`, with defaults
+ * chosen so whoever runs it (typically an AI agent) never needs to see, type
+ * or print the content, and the link it prints is useless to it:
+ *   - sealed to a receiving key unless --unsealed; refuses to run without one
+ *   - one read, one day, unless told otherwise
+ *   - content only from a file path, stdin, an environment variable, or
+ *     generated here; never from argv (--text, --password are refused)
+ *   - https required for anything but this machine
+ *   - prints the link (or --json) and nothing derived from the content
+ */
+async function send() {
+  for (const banned of ['--text', '--password', '-p']) {
+    if (args.includes(banned)) {
+      throw new UsageError(`${banned} is not accepted by 'ef send': it puts a secret on the command line, where shell history, the process list and agent transcripts keep it. Pipe it on stdin, use --from-env, or --generate.`);
+    }
+  }
+  const host = hostFrom(flag('--host', '-h'));
+  const ttlGiven = args.includes('--ttl');
+  const ttl = ttlGiven ? ttlFlag() : 86400;
+  const limitGiven = args.includes('--limit');
+  const limit = limitGiven ? limitFlag() : 1;
+  const token = flag('--token') || process.env.EF_TOKEN || config().token || '';
+  const name = flag('--name');
+  const fromEnv = flag('--from-env');
+  const generate = flag('--generate');
+  const unsealed = has('--unsealed');
+  const asJson = has('--json');
+  const toGiven = flags('--to');
+  const path = args.shift();
+  if (args.length) throw new UsageError(`unexpected argument '${printable(args[0])}'`);
+
+  const sources = [path !== undefined, fromEnv !== undefined, generate !== undefined].filter(Boolean).length;
+  if (sources !== 1) {
+    throw new UsageError(
+      'usage: ef send <file | -> | --from-env VAR | --generate <bytes>\n' +
+      '               [--to recipient]... [--name n] [--ttl s] [--limit n] [--json] [--unsealed]',
+    );
+  }
+  if (!token) throw new Error('no upload token configured: the human runs `ef config set token - < token.txt` (or sets EF_TOKEN)');
+  if (unsealed && toGiven.length) throw new UsageError('--unsealed and --to contradict each other');
+  const to = unsealed ? [] : await recipientsFrom(toGiven, { fallback: true });
+  if (!unsealed && !to.length) {
+    throw new UsageError(
+      `no receiving key configured. Ask the person to open ${host}/keys, create a receiving key and run\n` +
+      '  ef recipient add <name> efpk1.…\n' +
+      'where this runs. (--unsealed sends a plain link instead: anyone who sees it, including this transcript, can open it.)',
+    );
+  }
+  checkTransport(host, 'upload token', true);
+  await warnIfOpen();
+
+  let blob;
+  let fileName = name;
+  let isNote = true;
+  if (generate !== undefined) {
+    const n = generate === '' ? NaN : Number(generate);
+    if (!Number.isInteger(n) || n < 16 || n > 1024) throw new UsageError('--generate takes a number of random bytes from 16 to 1024');
+    blob = new Blob([b64urlEncode(new Uint8Array(nodeRandomBytes(n)))]);
+    fileName ||= 'generated-secret.txt';
+  } else if (fromEnv !== undefined) {
+    const value = process.env[fromEnv];
+    if (value === undefined || value === '') throw new UsageError(`environment variable ${printable(fromEnv)} is not set or empty`);
+    blob = new Blob([value]);
+    fileName ||= `${fromEnv}.txt`;
+  } else if (path === '-') {
+    if (process.stdin.isTTY) throw new UsageError("'ef send -' reads the content from stdin; pipe it in");
+    blob = new Blob([await readStdin()]);
+    if (!blob.size) throw new UsageError('stdin was empty; nothing to send');
+    fileName ||= 'secret.txt';
+  } else {
+    const st = await stat(path).catch(() => null);
+    if (!st) throw new UsageError(`${printable(path)} does not exist`);
+    if (st.isDirectory()) throw new UsageError(`${printable(path)} is a directory; archive it first (tar czf x.tgz dir) and send the archive`);
+    blob = await openAsBlob(path);
+    fileName ||= basename(path);
+    isNote = false;
+  }
+
+  const file = { name: fileName, type: isNote ? NOTE_TYPE : '', size: blob.size, slice: (a, b) => blob.slice(a, b) };
+  cancellable = true;
+  const done = await uploadFile(file, { baseUrl: host, token, ttl, limit, password: null, auth: true, signal: interrupt.signal });
+  const fragment = to.length ? await sealLinkKey(done.linkKey, to) : done.linkKey;
+  const link = `${host}/f/${done.id}#${fragment}`;
+  const summary = {
+    link,
+    id: done.id,
+    sealed: to.length > 0,
+    recipients: to.map((r) => ({ name: r.name, kid: r.kid })),
+    kind: isNote ? 'text' : 'file',
+    size: file.size,
+    downloads: limit || 'unlimited',
+    expires: new Date(done.expires).toISOString(),
+    deleteToken: done.deleteToken,
+  };
+  if (asJson) {
+    console.log(JSON.stringify(summary));
+    return;
+  }
+  console.error(`${summary.sealed ? `sealed to ${to.map((r) => r.name).join(', ')}` : 'NOT sealed: anyone holding this link can open it'} · ${summary.kind}, ${file.size} bytes · downloads: ${summary.downloads} · expires ${summary.expires}`);
+  console.error(`revoke early: ef rm ${host}/f/${done.id} --token ${done.deleteToken}`);
+  console.log(link);
 }
 
 function parseLink(link) {
@@ -538,8 +859,11 @@ async function get() {
   const pass = await password(passFlags);
   cancellable = true;
 
-  const { origin, id, linkKey } = parseLink(link);
+  const parsed = parseLink(link);
+  const { origin, id } = parsed;
+  let { linkKey } = parsed;
   if (!linkKey) throw new Error('link is missing its key (the part after #)');
+  if (isSealed(linkKey)) linkKey = await unsealWithLocalKeys(linkKey);
   if (!LINK_KEY.test(linkKey)) throw new Error('the key after # is malformed; copy the whole link');
 
   const meta = await fetchMeta(origin, id);
@@ -677,10 +1001,14 @@ async function rm() {
 
 try {
   if (command === 'put') await put();
+  else if (command === 'send') await send();
   else if (command === 'get') await get();
   else if (command === 'rm') await rm();
+  else if (command === 'recipient') await recipientCmd();
+  else if (command === 'keygen') await keygen();
+  else if (command === 'config') await configCmd();
   else {
-    console.error('usage: ef <put|get|rm> ...  (see the header of this file)');
+    console.error('usage: ef <put|send|get|rm|recipient|keygen|config> ...  (see the header of this file)');
     process.exit(2);
   }
 } catch (err) {

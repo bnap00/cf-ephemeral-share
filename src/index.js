@@ -1011,10 +1011,10 @@ export default {
     }
 
     // Existing static assets are served before the Worker runs, so this only
-    // handles /f/<id> share pages: same single-page app, no server rendering,
+    // handles /f/<id> share pages and /keys (receiving keys): same single-page app, no server rendering,
     // and the key in the fragment is never part of the request. Nothing else
     // gets the app - an unknown path is a 404, not a soft landing.
-    if (!/^\/f\/[A-Za-z0-9]{16,32}\/?$/.test(url.pathname)) {
+    if (!/^\/f\/[A-Za-z0-9]{16,32}\/?$/.test(url.pathname) && !/^\/keys\/?$/.test(url.pathname)) {
       return new Response('not found', { status: 404, headers: { ...SECURITY_HEADERS, 'content-type': 'text/plain' } });
     }
 

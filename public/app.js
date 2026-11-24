@@ -1369,12 +1369,16 @@ function startCountdown() {
 async function fileView(id) {
   show('file');
   state.shareId = id;
-  const linkKey = location.hash.slice(1);
-  state.linkKey = linkKey; // kept for x-ef-auth after a spent link drops it from the address bar
+  let linkKey = location.hash.slice(1);
   if (!linkKey) {
     status($('#file-status'), 'this link is missing its key - open the original link again, including the part after #', 'error');
     return;
   }
+  if (cryptoModule.isSealed?.(linkKey)) {
+    linkKey = await unsealLink(linkKey);
+    if (!linkKey) return;
+  }
+  state.linkKey = linkKey; // kept for x-ef-auth after a spent link drops it from the address bar
 
   try {
     state.meta = await fetchMeta(id);
@@ -1403,6 +1407,128 @@ async function fileView(id) {
   } else {
     await unlock(id, linkKey);
   }
+}
+
+/* ------------------------------------------------------- receiving keys */
+
+/** A link sealed to a receiving key (typically sent by an agent): the real
+    link key is recovered with a private key held only by this browser. Shows
+    why and returns null when there is none. */
+async function unsealLink(fragment) {
+  let result;
+  try {
+    const { unsealHere } = await import('./keys.js');
+    result = await unsealHere(fragment);
+  } catch (err) {
+    status($('#file-status'), err.message || 'this sealed link could not be opened', 'error');
+    return null;
+  }
+  if (result.linkKey) {
+    $('#sealed-note').textContent = `Opened with your receiving key “${result.record.label}” in this browser.`;
+    $('#sealed-note').hidden = false;
+    return result.linkKey;
+  }
+  status($('#file-status'), result.reason === 'storage'
+    ? 'this link is sealed to a receiving key, and this browser cannot read its key storage (a private window?) - open it where you created the key'
+    : 'this link is sealed to a receiving key that is not in this browser - open it in the browser where you created the key', 'error');
+  $('#sealed-help').hidden = false;
+  return null;
+}
+
+async function keysView() {
+  show('keys');
+  const keys = await import('./keys.js');
+  const list = $('#key-list');
+  const say = (msg, kind) => status($('#keys-status'), msg, kind);
+  if (!keys.keystoreAvailable()) {
+    say('this browser cannot store receiving keys', 'error');
+    $('#key-create').disabled = true;
+    return;
+  }
+
+  const render = async () => {
+    let items;
+    try {
+      items = await keys.listKeys();
+    } catch (err) {
+      say(err.message || 'cannot read key storage', 'error');
+      return;
+    }
+    list.replaceChildren();
+    $('#key-empty').hidden = items.length > 0;
+    for (const item of items) {
+      const row = document.createElement('li');
+      row.className = 'key-row';
+      const head = document.createElement('div');
+      head.className = 'key-head';
+      const name = document.createElement('span');
+      name.className = 'recent-name';
+      name.append(bdi(item.label));
+      const meta = document.createElement('span');
+      meta.className = 'recent-time';
+      meta.textContent = `id ${item.kid} · ${new Date(item.created).toLocaleDateString()}`;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'link-button';
+      del.textContent = 'delete';
+      let armed = null;
+      del.addEventListener('click', async () => {
+        if (!armed) {
+          del.textContent = 'confirm: links sealed to it become unreadable';
+          armed = setTimeout(() => { armed = null; del.textContent = 'delete'; }, 5000);
+          return;
+        }
+        clearTimeout(armed);
+        await keys.deleteKey(item.kid).catch((err) => say(err.message, 'error'));
+        render();
+      });
+      head.append(name, meta, del);
+
+      const field = (labelText, value) => {
+        const wrap = document.createElement('label');
+        wrap.className = 'field';
+        const cap = document.createElement('span');
+        cap.textContent = labelText;
+        const box = document.createElement('span');
+        box.className = 'linkbox';
+        const input = document.createElement('input');
+        input.readOnly = true;
+        input.spellcheck = false;
+        input.value = value;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'ghost';
+        button.textContent = 'copy';
+        button.addEventListener('click', () => copy(input, button));
+        box.append(input, button);
+        wrap.append(cap, box);
+        return wrap;
+      };
+      const slug = item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'me';
+      row.append(
+        head,
+        field('Public key - give this to the agent', item.text),
+        field('or run this where the agent runs', `ef recipient add ${slug} ${item.text}`),
+      );
+      list.append(row);
+    }
+  };
+
+  $('#key-create').addEventListener('click', async () => {
+    $('#key-create').disabled = true;
+    try {
+      await keys.createKey($('#key-label').value);
+      $('#key-label').value = '';
+      say('receiving key created - copy its public key to the agent', 'ok');
+      await render();
+    } catch (err) {
+      say(err.message || 'could not create a key', 'error');
+    } finally {
+      $('#key-create').disabled = false;
+    }
+  });
+  $('#key-label').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#key-create').click(); });
+  await render();
 }
 
 /* ----------------------------------------------------------------- boot */
@@ -1539,6 +1665,7 @@ async function main() {
   const configReady = loadConfig();
   const match = location.pathname.match(/^\/f\/([A-Za-z0-9]{16,32})\/?$/);
   if (match) return fileView(match[1]);
+  if (/^\/keys\/?$/.test(location.pathname)) return keysView();
 
   // Recipients never see the gate; only the owner's own device does.
   const token = tokenStore.get();

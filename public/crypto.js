@@ -299,3 +299,152 @@ export async function decryptStream(body, opened, onChunk, onProgress, opts = {}
   if (index !== chunks) throw new Error('file is truncated');
   return plainBytes;
 }
+
+/* ------------------------------------------------------- receiving keys
+ *
+ * Agent-to-human sharing. A person creates a receiving key (ECDH P-256) on a
+ * device they control; its private half never leaves that device. A sender
+ * (an AI agent, a script) holds only the public half, as a string
+ * 'efpk1.<base64url raw point>'.
+ *
+ * The share itself is encrypted exactly as before, under a random link key.
+ * Instead of putting that link key in the fragment, the sender seals it to
+ * each recipient and puts the sealed form there:
+ *
+ *   #r1.<ephemeral public key>.<kid>.<wrapped>[.<kid>.<wrapped>...]
+ *
+ *   shared  ECDH(ephemeral private, recipient public)
+ *   kek     HKDF-SHA256(shared, salt = epk || recipient raw,
+ *                       info 'ephemeral-files/v1/recipient')     AES-256-GCM
+ *   wrapped GCM(kek, iv = 0^12, aad = 'r1' || kid, link key)     48 bytes
+ *   kid     first 8 bytes of SHA-256(recipient raw)              11 chars
+ *
+ * Each kek is used once (fresh ephemeral key per share), so a fixed IV is
+ * safe. The link is therefore no secret on its own: whoever sends it, logs it
+ * or reads it in a transcript cannot derive the link key, and so cannot
+ * decrypt the share or, on a deployment that enforces download keys, spend a
+ * view. Only a holder of a matching private key can.
+ */
+
+export const RECIPIENT_PREFIX = 'efpk1.';
+const SEALED_PREFIX = 'r1.';
+const RECIPIENT_INFO = utf8.encode('ephemeral-files/v1/recipient');
+const ECDH = { name: 'ECDH', namedCurve: 'P-256' };
+const B64URL = /^[A-Za-z0-9_-]+$/;
+const MAX_RECIPIENTS = 8;
+
+/** True for a fragment produced by sealLinkKey (the part after '#'). */
+export const isSealed = (fragment) => typeof fragment === 'string' && fragment.startsWith(SEALED_PREFIX);
+
+async function kidOf(raw) {
+  return b64urlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', raw)).subarray(0, 8));
+}
+
+/** 'efpk1.<b64url>' -> { raw, kid, key }. Throws on anything that is not a
+    valid uncompressed P-256 point (importKey checks the point is on the curve). */
+export async function parseRecipient(text) {
+  const value = String(text ?? '').trim();
+  const body = value.startsWith(RECIPIENT_PREFIX) ? value.slice(RECIPIENT_PREFIX.length) : '';
+  if (body.length !== 87 || !B64URL.test(body)) throw new Error('not a receiving key (expected efpk1.<87 characters>)');
+  const raw = b64urlDecode(body);
+  if (raw.length !== 65 || raw[0] !== 4) throw new Error('not a receiving key');
+  let key;
+  try {
+    key = await crypto.subtle.importKey('raw', raw, ECDH, true, []);
+  } catch {
+    throw new Error('not a receiving key (the point is not on P-256)');
+  }
+  return { raw, kid: await kidOf(raw), key, text: RECIPIENT_PREFIX + body };
+}
+
+/**
+ * A new receiving key pair. `extractable` applies to the private half only:
+ * the browser keeps it false (stored as a CryptoKey in IndexedDB, it can be
+ * used but never read out); a CLI keystore needs true to write it to a file.
+ * Returns { privateKey, publicKey, raw, kid, text }.
+ */
+export async function generateRecipient({ extractable = false } = {}) {
+  const pair = await crypto.subtle.generateKey(ECDH, extractable, ['deriveBits']);
+  const raw = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey));
+  return { privateKey: pair.privateKey, publicKey: pair.publicKey, raw, kid: await kidOf(raw), text: RECIPIENT_PREFIX + b64urlEncode(raw) };
+}
+
+async function kek(privateKey, publicKey, epkRaw, recipientRaw) {
+  const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: publicKey }, privateKey, 256);
+  const hkdf = await crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: concat(epkRaw, recipientRaw), info: RECIPIENT_INFO },
+    hkdf,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+const wrapParams = (kid) => ({ name: 'AES-GCM', iv: new Uint8Array(12), additionalData: concat(utf8.encode('r1'), b64urlDecode(kid)) });
+
+/**
+ * Seal a link key (base64url, as beginEncrypt returns it) to one or more
+ * recipients (strings or parseRecipient results). Returns the fragment to use
+ * in place of the link key: `${origin}/f/${id}#${sealed}`.
+ */
+export async function sealLinkKey(linkKeyB64, recipients) {
+  const list = await Promise.all([].concat(recipients).map((r) => (typeof r === 'string' ? parseRecipient(r) : r)));
+  if (!list.length) throw new Error('no recipients');
+  if (list.length > MAX_RECIPIENTS) throw new Error(`at most ${MAX_RECIPIENTS} recipients`);
+  const linkKey = b64urlDecode(linkKeyB64);
+  if (linkKey.length !== 32) throw new Error('bad link key');
+  const eph = await crypto.subtle.generateKey(ECDH, false, ['deriveBits']);
+  const epkRaw = new Uint8Array(await crypto.subtle.exportKey('raw', eph.publicKey));
+  const parts = [SEALED_PREFIX.slice(0, -1), b64urlEncode(epkRaw)];
+  const seen = new Set();
+  for (const r of list) {
+    if (seen.has(r.kid)) continue;
+    seen.add(r.kid);
+    const key = await kek(eph.privateKey, r.key, epkRaw, r.raw);
+    parts.push(r.kid, b64urlEncode(new Uint8Array(await crypto.subtle.encrypt(wrapParams(r.kid), key, linkKey))));
+  }
+  return parts.join('.');
+}
+
+/** The sealed fragment's parts: { epk, entries: [{ kid, wrapped }] }. Throws if malformed. */
+export function parseSealed(fragment) {
+  if (!isSealed(fragment)) throw new Error('not a sealed link');
+  const parts = fragment.split('.');
+  const [, epk, ...rest] = parts;
+  const ok = epk && epk.length === 87 && B64URL.test(epk) && rest.length >= 2 && rest.length % 2 === 0
+    && rest.length / 2 <= MAX_RECIPIENTS
+    && rest.every((p, i) => B64URL.test(p) && p.length === (i % 2 === 0 ? 11 : 64));
+  if (!ok) throw new Error('this sealed link is malformed; copy the whole link');
+  const entries = [];
+  for (let i = 0; i < rest.length; i += 2) entries.push({ kid: rest[i], wrapped: rest[i + 1] });
+  return { epk, entries };
+}
+
+/** The kids a sealed fragment was sealed to, so a client can look for a matching key. */
+export const sealedKids = (fragment) => parseSealed(fragment).entries.map((e) => e.kid);
+
+/**
+ * Recover the link key (base64url) from a sealed fragment with one receiving
+ * key: { privateKey, raw } where raw is its public point. Throws when the
+ * fragment was not sealed to this key or was altered.
+ */
+export async function openSealedLinkKey(fragment, recipient) {
+  const { epk, entries } = parseSealed(fragment);
+  const kid = await kidOf(recipient.raw);
+  const entry = entries.find((e) => e.kid === kid);
+  if (!entry) throw new Error('this link was not sealed to this receiving key');
+  const epkRaw = b64urlDecode(epk);
+  let ephPublic;
+  try {
+    ephPublic = await crypto.subtle.importKey('raw', epkRaw, ECDH, false, []);
+  } catch {
+    throw new Error('this sealed link is malformed; copy the whole link');
+  }
+  const key = await kek(recipient.privateKey, ephPublic, epkRaw, recipient.raw);
+  try {
+    return b64urlEncode(new Uint8Array(await crypto.subtle.decrypt(wrapParams(kid), key, b64urlDecode(entry.wrapped))));
+  } catch {
+    throw new Error('this sealed link does not open with this receiving key; copy the whole link');
+  }
+}

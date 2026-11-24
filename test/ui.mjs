@@ -319,6 +319,50 @@ if (bundleRequests.length === 3 && allAuthed(bundleRequests)
 else fail(`bundle requests: ${bundleRequests.length}, auth ${JSON.stringify(bundleRequests.map((r) => r.headers['x-ef-auth'] ?? null))}`);
 if ((await fetch(cipherUrl(bundleLink))).status === 404) pass('the single-view file list burned after showing'); else fail('bundle index still live');
 
+// --- agent -> human: a receiving key made in the browser, a link sealed to it by the CLI
+const { spawnSync } = await import('node:child_process');
+const kctx = await browser.newContext();
+const kpage = await kctx.newPage();
+kpage.on('pageerror', (e) => errors.push(e.message));
+await kpage.goto(`${H}/keys`);
+await kpage.waitForSelector('[data-view="keys"]:not([hidden])');
+pass('/keys opens without an upload token');
+await kpage.fill('#key-label', 'ui laptop');
+await kpage.click('#key-create');
+await kpage.waitForSelector('#key-list li');
+const publicKey = await kpage.inputValue('#key-list li input');
+if (/^efpk1\.[A-Za-z0-9_-]{87}$/.test(publicKey)) pass('a receiving key is created and its public half shown'); else fail(`public key: ${publicKey}`);
+const extractable = await kpage.evaluate(async () => (await (await import('/keys.js')).listKeys())[0].privateKey.extractable);
+if (extractable === false) pass('the private half is non-extractable'); else fail('private key is extractable');
+
+const cliSend = (input) => spawnSync(process.execPath, [new URL('../tools/ef.mjs', import.meta.url).pathname, 'send', '-', '--to', publicKey, '--name', 'agent.env'], {
+  input, encoding: 'utf8', env: { PATH: process.env.PATH, EF_HOST: H, EF_TOKEN: TOKEN, EF_CONFIG: `${SP}/no-config.json` },
+});
+const sent = cliSend('API_KEY=sealed-by-an-agent\n');
+const sealedLink = sent.stdout.trim();
+if (sent.status === 0 && /#r1\./.test(sealedLink)) pass('the CLI sealed a link to the browser key'); else fail(`ef send: ${sent.stderr}`);
+
+await kpage.goto(local(sealedLink));
+await kpage.waitForSelector('#get:not([hidden])');
+if ((await kpage.textContent('#sealed-note')).includes('ui laptop')) pass('the share page says which receiving key opened it'); else fail('no sealed note');
+await kpage.click('#get');
+await kpage.waitForSelector('#note-wrap:not([hidden])');
+if ((await kpage.textContent('#note-text')) === 'API_KEY=sealed-by-an-agent\n') pass('the sealed text decrypts in the browser that holds the key');
+else fail(`sealed note: ${await kpage.textContent('#note-text')}`);
+
+// Another browser, with no key: refused before anything is fetched or spent.
+const other = cliSend('second secret');
+const octx = await browser.newContext();
+const opage = await octx.newPage();
+const otherRequests = [];
+opage.on('request', (r) => { if (/^\/api\/[fd]\//.test(new URL(r.url()).pathname)) otherRequests.push(new URL(r.url()).pathname); });
+await opage.goto(local(other.stdout.trim()));
+await opage.waitForFunction(() => document.querySelector('#file-status').textContent.includes('receiving key'));
+if (!(await opage.isVisible('#sealed-help'))) fail('no help link for a missing key'); else pass('a browser without the key is told where to open it');
+if (otherRequests.length === 0) pass('no share metadata or ciphertext is requested without the key'); else fail(`requests: ${otherRequests}`);
+await octx.close();
+await kctx.close();
+
 // The deliberate bad-token attempt logs an expected 401; anything else is a bug.
 const unexpected = errors.filter((e) => !e.includes('401'));
 if (unexpected.length) { console.log('page errors:', unexpected); failed = 1; }

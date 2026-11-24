@@ -6,6 +6,9 @@
   "description": "Ephemeral file sharing on Cloudflare Workers + R2 + KV",
   "license": "MIT",
   "repository": "github:bnap00/cf-ephemeral-share",
+  "bin": {
+    "ef": "tools/ef.mjs"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

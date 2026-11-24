@@ -38,6 +38,11 @@ server. A download proves it holds the link key without sending it, so a share
 ID alone cannot spend a one-read link once the deployment enforces this. See
 [Key-bound downloads](#key-bound-downloads).
 
+Agents and scripts can send to a person too, sealed to a receiving key that
+only that person's browser holds. The link they print is then useless to
+them, their logs, and any transcript it appears in. See
+[Sending from agents](#sending-from-agents).
+
 Browser encryption cannot protect against a compromised deployment serving
 modified JavaScript. Self-host the Worker and review changes before deploying
 them. The command-line client in `tools/ef.mjs` is available when you do not
@@ -119,8 +124,8 @@ whole hostname locks them out. Protect only these paths:
 
 Add a bypass policy for everything a recipient's browser loads:
 
-- `/f/*`, `/api/f/*`, `/api/d/*`, and `/api/config`
-- `/app.js`, `/crypto.js`, `/upload.js`, `/style.css`, and `/sw.js`
+- `/f/*`, `/keys`, `/api/f/*`, `/api/d/*`, and `/api/config`
+- `/app.js`, `/crypto.js`, `/upload.js`, `/keys.js`, `/style.css`, and `/sw.js`
 - `/manifest.webmanifest`, `/favicon.svg`, and `/icons/*`
 - the `BRAND_LOGO` path, if you set one
 
@@ -286,6 +291,115 @@ browser:
 ```sh
 curl -X DELETE -H 'x-delete-token: <delete token>' https://files.example.com/api/f/<id>
 ```
+
+### Sending from agents
+
+Human-to-human links carry their key in the fragment, so whoever sees the
+link can open it. That is the wrong shape when the sender is an AI agent: its
+commands and output are kept in transcripts and provider logs. Agent-to-human
+shares instead seal the link key to a **receiving key** that only the
+recipient's browser holds.
+
+1. The recipient opens `https://<host>/keys` in the browser they will read
+   sealed links in, and presses "Create receiving key". The browser creates
+   an ECDH P-256 key pair, keeps the private half in IndexedDB as a
+   non-extractable key, and shows the public half (`efpk1.…`). No upload
+   token is needed for this page. One key per device or browser profile.
+2. Where the agent runs, the person configures the CLI once. The upload token
+   is read from standard input so it never appears on a command line:
+
+   ```sh
+   npm install -g github:bnap00/cf-ephemeral-share   # or: npm link, in a clone
+   ef config set host https://files.example.com
+   ef config set token - < token.txt
+   ef recipient add me efpk1.…                        # the line /keys shows
+   ```
+
+   This writes `~/.config/ef/config.json` (or `$EF_CONFIG`), owner-only.
+3. The agent sends with `ef send`:
+
+   ```sh
+   ef send ./credentials.json                       # a file
+   some-command | ef send - --name db.env           # stdin
+   ef send --from-env DATABASE_URL                  # an environment variable
+   ef send --generate 32 --name new-api-secret      # a fresh random secret
+   ef send ./report.pdf --to me --limit 3 --ttl 3600 --json
+   ```
+
+   It prints the link (or, with `--json`, the link, ID, expiry, read limit,
+   recipients and delete token) and nothing derived from the content.
+4. The recipient opens the link in the browser holding the key. The page
+   unseals the link key locally and continues exactly like any other share.
+   Any other browser is told the link is sealed to a key it does not have,
+   and requests nothing from the server.
+
+`ef send` differs from `ef put` in its defaults, to suit an unattended
+sender:
+
+- It refuses to run without a receiving key, unless given `--unsealed`, which
+  prints a plain link and a warning.
+- One read and one day, unless `--limit` or `--ttl` say otherwise.
+- It refuses `--text` and `--password`, which would put a secret on the
+  command line, and directories.
+- It refuses plain `http` to anything but this machine.
+
+`ef put --to <recipient>` seals an ordinary upload the same way. Recipients
+are names from `ef recipient list` or literal `efpk1.…` keys; `--to` can be
+given up to eight times, and any one of the keys opens the link. Manage them
+with `ef recipient add|rm|list` and `ef config set default <name>`.
+
+A person who would rather receive in a terminal can run `ef keygen --label
+laptop`, which stores a private key under `~/.config/ef/keys/` (owner-only) and
+prints its public half. `ef get` then opens links sealed to it. Anything that
+can read that directory, including an agent running as the same user, can
+open those links, so prefer the browser for agent-to-human sharing.
+
+What sealing protects, and what it does not:
+
+- The link is not a secret. A transcript, log or chat message that contains
+  it cannot decrypt the share. On a deployment with
+  `DOWNLOAD_AUTH = "enforce"` it cannot spend the read either, because the
+  download key is derived from the sealed link key. Without enforcement,
+  someone with the share ID can still burn a one-read link without reading
+  it, so enforce download keys if agents send to you.
+- The sender still has the content: it produced it. The
+  [`ephemeral-send` skill](skills/ephemeral-send/SKILL.md) instructs agents to
+  pipe files and secrets straight into `ef send` without displaying them,
+  which keeps them out of the agent's context and transcript. That is a
+  convention the agent follows, not something the CLI can enforce.
+- The upload token is a capability: whatever holds it can create shares.
+  Give an agent its own deployment, or rotate the token when you stop using
+  the agent.
+- The receiving key is tied to one browser profile. Clearing the site's data
+  deletes it, and links sealed only to it can never be opened.
+
+The sealed fragment is `r1.<ephemeral public key>.<kid>.<wrapped>`, repeated
+`<kid>.<wrapped>` per extra recipient:
+
+```text
+shared   ECDH-P256(ephemeral private, recipient public)
+kek      HKDF-SHA256(shared, salt = epk || recipient public,
+                     info "ephemeral-files/v1/recipient")
+wrapped  AES-256-GCM(kek, iv = 0^12, aad = "r1" || kid, link key)
+kid      SHA-256(recipient public)[0..8]
+```
+
+Each share uses a fresh ephemeral key, so every key-encryption key is used
+once. The Worker sees none of this; sealed shares need no server change.
+
+#### The agent skill
+
+`skills/ephemeral-send/` is an agent skill (Claude Code and compatible
+agents) that teaches an agent to check the setup, send with `ef send`, never
+read, print or type the content, and report only the link. Install it by
+copying or linking the directory into the agent's skills folder:
+
+```sh
+ln -s "$PWD/skills/ephemeral-send" ~/.claude/skills/ephemeral-send
+```
+
+Its `scripts/ef.sh` runs `$EF_CLI` (a path to `tools/ef.mjs`) if set, or `ef`
+on `PATH`.
 
 ### Download API
 

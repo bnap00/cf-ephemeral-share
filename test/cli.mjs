@@ -171,7 +171,7 @@ function ef(args, { input, cwd = work, envExtra = {}, tty = false, spawned } = {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [...(tty ? ['--import', AS_TTY] : []), EF, ...args], {
       cwd,
-      env: { PATH: process.env.PATH, EF_HOST: HOST, EF_TOKEN: TOKEN, ...envExtra },
+      env: { PATH: process.env.PATH, EF_HOST: HOST, EF_TOKEN: TOKEN, EF_CONFIG: join(work, 'cfg', 'config.json'), ...envExtra },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const out = [];
@@ -550,6 +550,119 @@ try {
     }
   } finally {
     cutDownload = null;
+  }
+
+  /* -------------------------------------- agent -> human: sealed links */
+  {
+    const d = await fresh('sealed');
+    // The human's receiving key lives in a keystore the agent's config does not share.
+    const human = { EF_CONFIG: join(work, 'human', 'config.json') };
+    r = await ef(['keygen', '--label', 'laptop'], { envExtra: human });
+    const pub = r.out.trim();
+    check('keygen: prints a receiving key', r.code === 0 && /^efpk1\.[A-Za-z0-9_-]{87}$/.test(pub), r.err);
+
+    r = await ef(['send', '--generate', '32']);
+    check('send: refuses without a receiving key', r.code === 1 && r.err.includes('/keys') && !r.out, r.err);
+
+    r = await ef(['recipient', 'add', 'alice', 'efpk1.nope']);
+    check('recipient add: rejects a bad key', r.code === 1);
+    r = await ef(['recipient', 'add', 'efpk1.alice', 'efpk1.nope']);
+    check('recipient add: a name that looks like a key is refused', r.code === 1 && r.err.includes('not starting with efpk1.'), r.err);
+    r = await ef(['recipient', 'add', 'alice', pub]);
+    check('recipient add: first one becomes the default', r.code === 0 && r.err.includes('default'), r.err);
+    r = await ef(['recipient', 'add', 'alice', (await ef(['keygen'], { envExtra: { EF_CONFIG: join(work, 'other', 'config.json') } })).out.trim()]);
+    check('recipient add: a different key under an existing name is refused', r.code === 1 && r.err.includes('already exists'), r.err);
+    r = await ef(['recipient', 'add', 'alice', pub]);
+    check('recipient add: re-adding the same key is fine', r.code === 0, r.err);
+    const nine = Array(9).fill(['--to', pub]).flat();
+    const before9 = env.BUCKET.inits;
+    r = await ef(['send', '--generate', '16', ...nine]);
+    check('send: more than 8 recipients refused before upload', r.code === 1 && env.BUCKET.inits === before9, r.err);
+    r = await ef(['send', '--generate', '16', '--host', 'http://127.example.com']);
+    check('send: a 127.* hostname is not loopback', r.code === 1 && r.err.includes('refusing'), r.err);
+    r = await ef(['send', '--generate', '16', '--limit', '0']);
+    const revoke = r.err.match(/revoke early: ef rm (\S+) --token (\S+)/);
+    r = await ef(['rm', revoke?.[1] ?? 'x', '--token', revoke?.[2] ?? 'x'], { envExtra: { EF_HOST: 'http://127.0.0.1:9' } });
+    check('send: the printed revoke command carries its host', r.code === 0 && r.err.includes('deleted'), r.err);
+    r = await ef(['recipient', 'list']);
+    check('recipient list', r.code === 0 && r.out.startsWith('alice (default)'), r.out);
+
+    // A file, sealed: the link carries no usable key.
+    await writeFile(join(d, 'report.pdf'), payload.subarray(0, 300000));
+    r = await ef(['send', join(d, 'report.pdf'), '--json']);
+    const sent = JSON.parse(r.out || '{}');
+    check('send file: sealed JSON result', r.code === 0 && sent.sealed === true && /#r1\./.test(sent.link)
+      && sent.downloads === 1 && sent.recipients[0].name === 'alice' && sent.kind === 'file', r.out + r.err);
+    check('send file: output never contains the content', !r.out.includes(payload.subarray(0, 64).toString('base64')));
+
+    // Without the receiving key, nothing opens and nothing is spent.
+    r = await ef(['get', sent.link, '-o', join(d, 'x.pdf')]);
+    check('get sealed: refused without the receiving key', r.code === 1 && r.err.includes('receiving key'), r.err);
+    check('get sealed: no view spent without the key', (await remainingOf(sent.link)) === 1);
+    // Stripping the seal does not help either: the fragment is not a link key.
+    const [base, frag] = sent.link.split('#');
+    r = await ef(['get', `${base}#${frag.split('.')[3]}`, '-o', join(d, 'x.pdf')]);
+    check('get sealed: a wrapped key is not the link key', r.code === 1 && (await remainingOf(sent.link)) === 1, r.err);
+
+    r = await ef(['get', sent.link, '-o', join(d, 'got.pdf')], { envExtra: human });
+    check('get sealed: opens with the receiving key', r.code === 0
+      && Buffer.compare(await readFile(join(d, 'got.pdf')), payload.subarray(0, 300000)) === 0, r.err);
+    r = await ef(['get', sent.link, '-o', join(d, 'again.pdf')], { envExtra: human });
+    check('send: one read by default', r.code === 1);
+
+    // Text sources that keep the secret off the command line.
+    r = await ef(['send', '--from-env', 'DB_PASSWORD'], { envExtra: { DB_PASSWORD: 's3cret-from-env' } });
+    check('send --from-env: link only on stdout', r.code === 0 && /^http:\/\/127\.0\.0\.1:\d+\/f\/[A-Za-z0-9]+#r1\.\S+\n$/.test(r.out)
+      && !r.out.includes('s3cret') && !r.err.includes('s3cret'), r.out + r.err);
+    const envLink = r.out.trim();
+    r = await ef(['get', envLink], { envExtra: human });
+    check('send --from-env: recipient reads it', r.code === 0 && r.out === 's3cret-from-env', r.err);
+
+    r = await ef(['send', '-', '--name', 'db.env'], { input: 'A=1\nB=2\n' });
+    const stdinLink = r.out.trim();
+    r = await ef(['get', stdinLink], { envExtra: human });
+    check('send -: stdin round trip', r.code === 0 && r.out === 'A=1\nB=2\n', r.err);
+
+    r = await ef(['send', '--generate', '32', '--to', pub, '--limit', '2']);
+    const genLink = r.out.trim();
+    r = await ef(['get', genLink], { envExtra: human });
+    check('send --generate: a fresh 32-byte secret, sealed to a literal key', r.code === 0 && /^[A-Za-z0-9_-]{43}$/.test(r.out), r.out + r.err);
+
+    const before = env.BUCKET.inits;
+    r = await ef(['send', '--text', 'oops']);
+    check('send --text: refused before upload', r.code === 1 && r.err.includes('command line') && env.BUCKET.inits === before, r.err);
+    r = await ef(['send', '-', '--password', 'x'], { input: 'y' });
+    check('send --password: refused', r.code === 1 && env.BUCKET.inits === before);
+    r = await ef(['send', '--generate', '32', '--host', 'http://files.example.invalid']);
+    check('send: refuses plain http to another machine', r.code === 1 && r.err.includes('refusing'), r.err);
+    r = await ef(['send', '--generate', '32', '--to', 'bob']);
+    check('send: unknown recipient refused', r.code === 1 && r.err.includes('unknown recipient'), r.err);
+    r = await ef(['send', d]);
+    check('send: a directory is refused', r.code === 1 && r.err.includes('archive'), r.err);
+
+    // Unsealed is possible, but loudly so.
+    r = await ef(['send', '--generate', '16', '--unsealed']);
+    check('send --unsealed: plain link with a warning', r.code === 0 && LINK.test(r.out) && r.err.includes('NOT sealed'), r.out + r.err);
+
+    // put --to seals too; a bundle-less put still works the old way.
+    r = await ef(['put', '--text', 'via put', '--to', 'alice']);
+    const putLink = r.out.trim();
+    r = await ef(['get', putLink], { envExtra: human });
+    check('put --to: sealed round trip', /#r1\./.test(putLink) && r.code === 0 && r.out === 'via put', r.err);
+
+    // Config: host and token from the file, token only from stdin, redacted when shown.
+    const cfgOnly = { EF_HOST: '', EF_TOKEN: '', EF_CONFIG: join(work, 'cfg2', 'config.json') };
+    r = await ef(['config', 'set', 'token', TOKEN], { envExtra: cfgOnly });
+    check('config set token: refuses argv', r.code === 1);
+    r = await ef(['config', 'set', 'token', '-'], { envExtra: cfgOnly, input: `${TOKEN}\n` });
+    check('config set token: from stdin', r.code === 0, r.err);
+    r = await ef(['config', 'set', 'host', HOST], { envExtra: cfgOnly });
+    r = await ef(['recipient', 'add', 'alice', pub], { envExtra: cfgOnly });
+    r = await ef(['config', 'show'], { envExtra: cfgOnly });
+    check('config show: token redacted', r.code === 0 && !r.out.includes(TOKEN) && r.out.includes('<set,'), r.out);
+    r = await ef(['send', '--generate', '24'], { envExtra: cfgOnly });
+    check('send: host, token and recipient from the config file', r.code === 0 && /#r1\./.test(r.out), r.err);
+    check('send: config written owner-only', ((await import('node:fs')).statSync(join(work, 'cfg2', 'config.json')).mode & 0o077) === 0);
   }
 
   // Usage.

@@ -342,6 +342,11 @@ const completeWith = (env, init, parts, header = HEADER) =>
   check('config: missing BUCKET binding -> 503 naming it', noBucket.status === 503 && noBucket.data.error.includes('BUCKET'));
   const noAssets = await call(freshEnv({ ASSETS: undefined }), 'GET', '/f/aaaaaaaaaaaaaaaa');
   check('config: missing ASSETS binding -> 503 naming it', noAssets.status === 503 && noAssets.data.error.includes('ASSETS'));
+  const keysPage = await call(freshEnv(), 'GET', '/keys', { token: null });
+  check('pages: /keys serves the app with the page CSP, uncached', keysPage.status === 200
+    && keysPage.headers.get('cache-control') === 'no-store' && /default-src 'none'/.test(keysPage.headers.get('content-security-policy') || ''));
+  check('pages: other paths still 404', (await call(freshEnv(), 'GET', '/keys/x', { token: null })).status === 404
+    && (await call(freshEnv(), 'GET', '/keysx', { token: null })).status === 404);
   check('config: /api/config works without storage bindings', (await call(freshEnv({ META: undefined, BUCKET: undefined }), 'GET', '/api/config')).status === 200);
 }
 

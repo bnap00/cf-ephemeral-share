@@ -9,13 +9,14 @@
  * script beside it is a version skew); the cache is only the offline and
  * slow-network fallback.
  */
-const CACHE = 'ephemeral-shell-v5';
+const CACHE = 'ephemeral-shell-v6';
 const SHELL = [
   '/',
   '/style.css',
   '/app.js',
   '/crypto.js',
   '/upload.js',
+  '/keys.js',
   '/manifest.webmanifest',
   '/favicon.svg',
   '/icons/icon-192.png',

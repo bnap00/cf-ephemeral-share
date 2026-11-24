@@ -2,9 +2,10 @@
  * Proves the wire format round-trips and that tampering is caught.
  * Run with: node test/roundtrip.mjs
  */
-import { createHash, hkdfSync } from 'node:crypto';
+import { createHash, hkdfSync, createECDH, createDecipheriv } from 'node:crypto';
 import {
   CHUNK, TAG, beginEncrypt, openHeader, decryptStream, deriveAuth, resumeOffset, b64urlDecode, b64urlEncode, randomBytes,
+  generateRecipient, parseRecipient, sealLinkKey, openSealedLinkKey, isSealed, sealedKids, parseSealed,
 } from '../public/crypto.js';
 
 let failures = 0;
@@ -327,6 +328,59 @@ await expectThrow('chunk size over 64 MiB refused on upload', () => beginEncrypt
   await decryptStream(streamOf(b64urlDecode(v.body)), lo, (c) => out.push(c), undefined, { startChunk: 0 });
   check('resume: legacy fixture with startChunk 0 decrypts', same(joined(out), pattern(v.size)));
   await expectThrow('resume: legacy fixture startChunk 1 refused', () => decryptStream(streamOf(b64urlDecode(v.body)), lo, () => {}, undefined, { startChunk: 1 }));
+}
+
+/* Receiving keys: a link key sealed to recipients opens with each of their
+   private keys and nothing else, and the format matches the documented
+   construction (checked with node:crypto, independently of WebCrypto). */
+{
+  const alice = await generateRecipient();
+  const bob = await generateRecipient();
+  const eve = await generateRecipient();
+  const linkKey = b64urlEncode(randomBytes(32));
+  const sealed = await sealLinkKey(linkKey, [alice.text, bob.text]);
+  check('sealed: recognised', isSealed(sealed) && !isSealed(linkKey));
+  check('sealed: lists both recipients', JSON.stringify(sealedKids(sealed)) === JSON.stringify([alice.kid, bob.kid]));
+  check('sealed: fragment is URL-safe', /^[A-Za-z0-9_.-]+$/.test(sealed));
+  check('sealed: alice opens it', (await openSealedLinkKey(sealed, alice)) === linkKey);
+  check('sealed: bob opens it', (await openSealedLinkKey(sealed, bob)) === linkKey);
+  await expectThrow('sealed: eve cannot', () => openSealedLinkKey(sealed, eve));
+  check('sealed: the link key appears nowhere in it', !sealed.includes(linkKey));
+  const again = await sealLinkKey(linkKey, [alice.text]);
+  check('sealed: fresh ephemeral key every time', again.split('.')[1] !== sealed.split('.')[1]);
+  check('sealed: duplicate recipients collapse', sealedKids(await sealLinkKey(linkKey, [alice.text, alice.text])).length === 1);
+
+  // Tampering: a flipped wrapped byte, a swapped ephemeral key, an entry moved to another kid.
+  const parts = sealed.split('.');
+  const flip = (s) => (s[5] === 'A' ? `${s.slice(0, 5)}B${s.slice(6)}` : `${s.slice(0, 5)}A${s.slice(6)}`);
+  await expectThrow('sealed: altered wrapped key rejected', () => openSealedLinkKey([...parts.slice(0, 3), flip(parts[3]), ...parts.slice(4)].join('.'), alice));
+  await expectThrow('sealed: swapped ephemeral key rejected', () => openSealedLinkKey([parts[0], again.split('.')[1], ...parts.slice(2)].join('.'), alice));
+  await expectThrow('sealed: entry relabelled to another kid rejected', () => openSealedLinkKey([parts[0], parts[1], bob.kid, parts[3]].join('.'), bob));
+  for (const bad of ['r1.', 'r1.x.y.z', `${sealed}.extra`, sealed.slice(0, -1), parts.slice(0, 3).join('.')]) {
+    await expectThrow(`sealed: malformed '${bad.slice(0, 12)}…' rejected`, () => parseSealed(bad));
+  }
+  for (const bad of ['', 'efpk1.', 'efpk2.' + alice.text.slice(6), alice.text.slice(0, -1), `efpk1.${'A'.repeat(87)}`]) {
+    await expectThrow(`recipient: '${bad.slice(0, 10)}…' rejected`, () => parseRecipient(bad));
+  }
+  check('recipient: round trips its own text', (await parseRecipient(` ${alice.text} `)).kid === alice.kid);
+
+  // Independent implementation of the documented construction.
+  const ecdh = createECDH('prime256v1');
+  ecdh.generateKeys();
+  const raw = new Uint8Array(ecdh.getPublicKey());
+  const mine = await parseRecipient(`efpk1.${b64urlEncode(raw)}`);
+  const s2 = (await sealLinkKey(linkKey, [mine])).split('.');
+  const epk = b64urlDecode(s2[1]);
+  const kid = b64urlEncode(createHash('sha256').update(raw).digest().subarray(0, 8));
+  const shared = ecdh.computeSecret(epk);
+  const kek = Buffer.from(hkdfSync('sha256', shared, Buffer.concat([epk, raw]), 'ephemeral-files/v1/recipient', 32));
+  const wrapped = b64urlDecode(s2[3]);
+  const d = createDecipheriv('aes-256-gcm', kek, Buffer.alloc(12));
+  d.setAAD(Buffer.concat([Buffer.from('r1'), b64urlDecode(kid)]));
+  d.setAuthTag(wrapped.subarray(32));
+  const unwrapped = Buffer.concat([d.update(wrapped.subarray(0, 32)), d.final()]);
+  check('sealed: kid is sha256(raw)[0:8]', s2[2] === kid);
+  check('sealed: matches the documented construction', b64urlEncode(unwrapped) === linkKey);
 }
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall checks passed');
