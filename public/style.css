@@ -34,6 +34,18 @@
 /* Flex and grid rules would otherwise win over the hidden attribute. */
 [hidden] { display: none !important; }
 
+/* Read by screen readers, not drawn. */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Locked while an upload runs; a cue for the browsers that support inert. */
+[inert] { opacity: .6; }
+
 html {
   /* Installed on iOS/Android, there is no browser chrome to bounce against. */
   overscroll-behavior-y: contain;
@@ -128,7 +140,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
   cursor: pointer;
   transition: border-color .15s, color .15s, background .15s;
 }
-.drop:hover, .drop:focus-visible { border-color: var(--accent); color: var(--ink); outline: none; }
+.drop:hover, .drop:focus-visible { border-color: var(--accent); color: var(--ink); }
+.drop:focus { outline: none; }
+.drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
 .drop.has-file { border-style: solid; color: var(--ink); }
 .drop.has-file #drop-label {
@@ -156,7 +170,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 }
 .options label { display: flex; flex-direction: column; gap: .3rem; font-size: .82rem; color: var(--muted); }
 .options label.wide { grid-column: 1 / -1; }
-.options em { font-style: normal; opacity: .7; }
+.options em { font-style: normal; } /* --muted alone is ~5:1; any dimming drops below AA */
 
 select, textarea, input:not([type="checkbox"]) {
   width: 100%;
@@ -227,6 +241,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* recent */
 #recent-wrap { margin-top: 2.25rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
+.lock-choice { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
 .recent { list-style: none; margin: 0 0 .6rem; padding: 0; }
 .recent li {
   display: flex; align-items: center; gap: .75rem;

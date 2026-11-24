@@ -29,6 +29,14 @@ In scope:
 - Weaknesses in the browser or CLI cryptography (`public/crypto.js`,
   `tools/ef.mjs`)
 - Bypassing the upload token, expiry, download limits, or revocation
+- Downloading, or spending a view of, a share that has a download verifier
+  without its link key on a deployment with `DOWNLOAD_AUTH = "enforce"`, or
+  learning anything about the encryption key from the verifier or the
+  `x-ef-auth` header
+- Forging resume tickets, or using one beyond its documented window or for
+  another share
+- Exceeding a download limit on a deployment with the `COUNTER` Durable Object
+  binding enabled
 - Script injection or content-type confusion on the deployment's origin
 - Leaks of the URL fragment through logs, referrers, caches, or the service
   worker
@@ -37,8 +45,17 @@ Out of scope:
 
 - A compromised deployment serving modified JavaScript. The README documents
   this limit; use the CLI client if it matters to you.
-- The race on concurrent downloads of a one-read link, which the README
-  documents under "Known limits"
+- Download limits being exceeded while KV changes reach other Cloudflare
+  locations on a deployment without the optional `COUNTER` binding, for
+  example a one-read link downloaded from two locations at once. The README
+  documents this under "Known limits".
+- Downloads by someone who knows only a share ID while `DOWNLOAD_AUTH` is not
+  set to `"enforce"`, or of shares that have no download verifier
+- Anyone holding a resume ticket, including someone it was passed on to,
+  reading the same ciphertext again within the window the README documents
+- Decrypted copies left in browser storage on the OPFS download path, by a
+  tab that was closed or crashed, until the next visit removes them as the
+  README documents
 - Missing rate limits on deployments that have not enabled the optional
   `[[ratelimits]]` bindings
 - Denial of service against your own Cloudflare account quotas
